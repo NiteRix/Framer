@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Enables remote debugging of the panel while developing.
+  With the panel open, browse to http://localhost:8088 in Chrome.
+  Requires CSXS PlayerDebugMode=1 (see tools/install.sh / tools/install.bat).
+-->
+<ExtensionList>
+  <Extension Id="com.niterix.framer.panel">
+    <HostList>
+      <Host Name="PPRO" Port="8088"/>
+    </HostList>
+  </Extension>
+</ExtensionList>

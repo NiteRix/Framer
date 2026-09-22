@@ -1,0 +1,22 @@
+{
+  "name": "framer",
+  "version": "1.0.0",
+  "description": "Auto-reframe horizontal video to vertical 9:16 in Adobe Premiere Pro, with the webcam region layered on top.",
+  "private": true,
+  "scripts": {
+    "test": "node test/run.js",
+    "test:panel": "node test/panel/smoke.js",
+    "fixture": "node test/panel/make-fixture.js",
+    "icons": "node tools/make-icons.js"
+  },
+  "keywords": [
+    "premiere-pro",
+    "cep",
+    "extension",
+    "vertical-video",
+    "reframe",
+    "shorts",
+    "tiktok"
+  ],
+  "license": "MIT"
+}

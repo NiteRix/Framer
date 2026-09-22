@@ -1,0 +1,8 @@
+'use strict';
+var h = require('./harness');
+process.stdout.write('\nFramer test suite\n\n');
+require('./layout.test.js');
+require('./detect.test.js');
+require('./panel.test.js');
+require('./integration.test.js');
+process.exit(h.run() === 0 ? 0 : 1);

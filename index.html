@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Framer</title>
+<link rel="stylesheet" href="css/framer.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <span>Framer</span>
+  </div>
+  <button id="btn-diagnostics" class="ghost" title="Check what this Premiere build supports">Diagnostics</button>
+</header>
+
+<p id="status" class="status" role="status">Select the horizontal clip, then press Read selection.</p>
+
+<!-- 1. Source ---------------------------------------------------------- -->
+<section class="card">
+  <h2>1 &middot; Source clip</h2>
+  <div class="row">
+    <button id="btn-read" class="primary">Read selection</button>
+    <button id="btn-frame" class="ghost" disabled>Reload frame</button>
+  </div>
+  <dl class="facts">
+    <dt>Clip</dt><dd id="fact-name">&mdash;</dd>
+    <dt>Source</dt><dd id="fact-size">&mdash;</dd>
+    <dt>Range</dt><dd id="fact-range">&mdash;</dd>
+    <dt>Frame</dt><dd id="fact-frame">&mdash;</dd>
+  </dl>
+  <div class="row tight">
+    <label class="inline">Reference frame at
+      <input type="range" id="scrub" min="0" max="1" step="0.01" value="0.35" disabled>
+    </label>
+  </div>
+  <details id="size-override">
+    <summary>Source size is wrong?</summary>
+    <div class="row tight">
+      <label class="inline">W <input type="number" id="src-w" min="16" step="2"></label>
+      <label class="inline">H <input type="number" id="src-h" min="16" step="2"></label>
+      <button id="btn-apply-size" class="ghost">Apply</button>
+    </div>
+    <p class="hint">Only needed when Premiere and the panel both fail to report the
+      media's pixel size.</p>
+  </details>
+</section>
+
+<!-- 2. Regions --------------------------------------------------------- -->
+<section class="card">
+  <h2>2 &middot; Regions</h2>
+  <div class="seg" role="tablist">
+    <button id="tab-gameplay" class="seg-btn" role="tab">Gameplay</button>
+    <button id="tab-webcam" class="seg-btn is-on" role="tab">Webcam</button>
+  </div>
+  <canvas id="picker" width="720" height="405" class="canvas picker"></canvas>
+  <div class="row">
+    <button id="btn-detect" class="primary" disabled>Auto-detect webcam</button>
+    <button id="btn-suggest" class="ghost" disabled title="Pick a gameplay crop that avoids the webcam box">Fit gameplay</button>
+    <button id="btn-reset-regions" class="ghost">Reset</button>
+  </div>
+  <p id="detect-note" class="hint"></p>
+  <div class="grid4">
+    <label>X <input type="number" id="r-x" min="0" max="100" step="0.5"></label>
+    <label>Y <input type="number" id="r-y" min="0" max="100" step="0.5"></label>
+    <label>W <input type="number" id="r-w" min="1" max="100" step="0.5"></label>
+    <label>H <input type="number" id="r-h" min="1" max="100" step="0.5"></label>
+  </div>
+  <p class="hint">Values are percentages of the source frame. Drag the box on the
+    frame above, or type exact numbers.</p>
+</section>
+
+<!-- 3. Layout ---------------------------------------------------------- -->
+<section class="card">
+  <h2>3 &middot; Layout</h2>
+  <div class="row">
+    <label class="inline grow">Template
+      <select id="layout"></select>
+    </label>
+  </div>
+  <p id="layout-hint" class="hint"></p>
+  <div id="layout-options" class="options"></div>
+  <div class="row">
+    <label class="inline grow">Output
+      <select id="output">
+        <option value="1080x1920" selected>1080 &times; 1920 (9:16)</option>
+        <option value="720x1280">720 &times; 1280 (9:16)</option>
+        <option value="1440x2560">1440 &times; 2560 (9:16)</option>
+        <option value="1080x1350">1080 &times; 1350 (4:5)</option>
+        <option value="1080x1080">1080 &times; 1080 (1:1)</option>
+      </select>
+    </label>
+  </div>
+</section>
+
+<!-- 4. Result ---------------------------------------------------------- -->
+<section class="card">
+  <h2>4 &middot; Preview</h2>
+  <canvas id="composite" width="360" height="640" class="canvas composite"></canvas>
+  <ul id="plan-summary" class="summary"></ul>
+</section>
+
+<!-- 5. Build ----------------------------------------------------------- -->
+<section class="card">
+  <h2>5 &middot; Build</h2>
+  <div class="row wrap">
+    <label class="check"><input type="checkbox" id="opt-audio" checked> Keep audio</label>
+    <label class="check"><input type="checkbox" id="opt-trim" checked> Match clip trim</label>
+    <label class="check"><input type="checkbox" id="opt-labels" checked> Colour-label layers</label>
+  </div>
+  <label class="inline grow">Sequence name
+    <input type="text" id="seq-name" placeholder="&lt;clip name&gt; - Vertical">
+  </label>
+  <button id="btn-build" class="primary big" disabled>Build vertical sequence</button>
+  <p class="hint">Creates a new sequence and leaves the original untouched.</p>
+  <p class="hint">Premiere's <strong>Preferences &gt; Media &gt; Default Media Scaling</strong> must be
+    <strong>None</strong>. On any other setting Premiere rescales inserted clips itself and the
+    layers will not match this preview.</p>
+</section>
+
+<!-- Advanced ----------------------------------------------------------- -->
+<details class="card">
+  <summary>Advanced</summary>
+  <div class="row">
+    <label class="inline grow">Crop values are written as
+      <select id="crop-units">
+        <option value="percent" selected>Percent (0&ndash;100)</option>
+        <option value="normalized">Normalised (0&ndash;1)</option>
+      </select>
+    </label>
+  </div>
+  <button id="btn-calibrate" class="ghost">Calibrate against selected clip</button>
+  <p class="hint">Premiere's Crop parameters read as percentages, but some builds
+    expect 0&ndash;1 from a script. If a built layer looks cropped to nothing,
+    calibrate once and switch this setting.</p>
+  <div class="row">
+    <button id="btn-copy-log" class="ghost">Copy log</button>
+    <button id="btn-clear-log" class="ghost">Clear</button>
+  </div>
+  <pre id="log" class="log"></pre>
+</details>
+
+<script src="js/lib/CSInterface.js"></script>
+<script src="js/core/layout.js"></script>
+<script src="js/core/detect.js"></script>
+<script src="js/app/host.js"></script>
+<script src="js/app/media.js"></script>
+<script src="js/app/preview.js"></script>
+<script src="js/app/ui.js"></script>
+</body>
+</html>
