@@ -27,8 +27,8 @@ Grab the latest build from [Releases](https://github.com/NiteRix/Framer/releases
 
 | You are on | Get |
 |---|---|
-| **Windows** | `Framer-1.0.0-Setup.exe` — run it, restart Premiere |
-| **macOS** | `Framer-1.0.0-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
+| **Windows** | `Framer-1.0.1-Setup.exe` — run it, restart Premiere |
+| **macOS** | `Framer-1.0.1-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
 
 The portable zip works on Windows too: unpack it and double-click
 `Install-Windows.bat`. Both install into your own user folder, so there is no
@@ -58,10 +58,12 @@ cd Framer
 ## Using it
 
 1. **Select the clip.** Click it on the timeline (its trim is picked up) or in
-   the Project panel, then press **Read selection**. The panel loads a
-   reference frame from the media file.
+   the Project panel, then press **Read selection**. Premiere renders a
+   reference frame of the clip; the slider under it picks which moment.
 2. **Mark the regions.** Press **Auto-detect webcam** and check the box it
-   draws, or drag it yourself. The **Gameplay** tab marks what should fill the
+   draws, or drag it yourself. Detection has Premiere render eight frames from
+   across the clip, so you will see the playhead jump; it is put back
+   afterwards. The **Gameplay** tab marks what should fill the
    main area; **Fit gameplay** moves it clear of the webcam.
 3. **Pick a template** and adjust it. The preview is drawn from the same
    numbers that get written into Premiere, so it is not an approximation.
@@ -105,7 +107,13 @@ simulating Premiere's transform pipeline and asserting each region lands on its
 target to within a pixel, across four source resolutions, four webcam
 positions, and every template.
 
-Webcam detection samples ten frames and looks for a rectangle whose edges are
+Reference frames are rendered by Premiere itself (the QE sequence's
+`exportFramePNG`), so any codec Premiere can import works. The clip's pixel
+size comes from its metadata when Premiere exposes it, and otherwise straight
+from the MP4/MOV header - only the header boxes are read, so this stays cheap
+on multi-gigabyte recordings.
+
+Webcam detection samples eight frames and looks for a rectangle whose edges are
 long, straight, persistent gradient lines — an overlay box is composited onto
 the capture, so its border survives averaging — then scores candidates on
 border strength, how differently the inside moves from the surroundings,
@@ -124,11 +132,13 @@ always overrule it.
   Drop Shadow *is* applied, because that effect can be scripted.
 - **The framing is static.** There is no keyframed subject tracking; a region
   is chosen once and held for the clip.
-- **Preview codec support is the browser's.** The reference frame comes from
-  the media file, so H.264/HEVC/VP9/AV1 work. For ProRes, DNxHD, MXF and
-  similar, Framer falls back to a still rendered from the active sequence —
-  which shows every visible track, not just your clip. The panel says which
-  source it used.
+- **The reference frame is the sequence, not the clip alone.** Premiere
+  renders what the active sequence shows at that moment, including anything
+  on higher tracks. Read the selection from a sequence where the clip is
+  visible and unobstructed — one created from the clip is ideal. If Premiere
+  refuses to render a still, the panel tries decoding the file itself, which
+  only works for formats its embedded browser supports (typically not H.264
+  MP4s).
 - **Crop parameter units vary between builds.** Premiere shows Crop as a
   percentage, but some versions expect 0–1 from a script. If a built layer
   looks cropped to nothing, use **Advanced → Calibrate** once and switch the
@@ -141,11 +151,14 @@ always overrule it.
 ## Development
 
 ```bash
-npm test              # 38 tests: geometry, detection, panel wiring, syntax
+npm test              # 65 tests: geometry, detection, host script, panel wiring
 ```
 
 The geometry and detection modules (`extension/js/core/`) are dependency-free
-and run under Node, which is what the suite exercises. `test/panel/smoke.js`
+and run under Node. So does the host script: `test/extendscript-shim.js`
+provides `File`, `Folder`, `Time` and `$`, and `test/host.test.js` runs
+`framer.jsx` against a fake Premiere shaped like 26.0.1 (no DOM frame export,
+QE present, no frame size in the metadata). `test/panel/smoke.js`
 boots the actual panel in Chromium against a stubbed CEP host and drives it end
 to end — it caught a preview bug that unit tests could not:
 
@@ -183,6 +196,7 @@ extension/                     the payload that gets installed
   js/app/preview.js            region picker and composite preview
   js/app/ui.js                 panel controller
   jsx/framer.jsx               Premiere host script: sequence building, effects
+  jsx/mp4dims.jsx              frame size from an MP4/MOV header
 installer/windows/             Inno Setup script for the .exe
 scripts/make-icons.js          regenerates the panel icons
 test/                          test suite

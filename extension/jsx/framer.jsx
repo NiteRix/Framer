@@ -16,12 +16,13 @@
  */
 
 // @include "json2.jsx"
+// @include "mp4dims.jsx"
 
 // ---------------------------------------------------------------------------
 // Small helpers (ES3 - no forEach/map/indexOf on arrays, no let/const)
 // ---------------------------------------------------------------------------
 
-var FRAMER_VERSION = '1.0.0';
+var FRAMER_VERSION = '1.0.1';
 
 function fLog(log, msg) {
     if (log) { log.push(String(msg)); }
@@ -83,34 +84,55 @@ function fFindProjectItemByNodeId(nodeId) {
 
 /**
  * Source pixel dimensions for a project item. The DOM has no direct property,
- * so read the metadata Premiere already holds:
- *   1. XMP videoFrameSize (stDim:w / stDim:h)
- *   2. project metadata column "Image Size" ("1920 x 1080")
- * Returns null when neither is readable - the panel then measures the media
- * file itself, and can fall back to asking the user.
+ * so try, in order:
+ *   1. XMP videoFrameSize - written either as attributes or as child elements
+ *   2. the project's Video Info column, e.g. "1920 x 1080 (1.0)"
+ *   3. the MP4/MOV header itself, which needs no metadata at all
+ * Returns null when none of those work; the panel then falls back to the size
+ * of the frame Premiere renders, and says so.
  */
 function fSourceDimensions(projectItem, log) {
     var xmp = fSafe(function () { return projectItem.getXMPMetadata(); }, '');
     if (xmp) {
-        var w = xmp.match(/stDim:w\s*=\s*"(\d+)"/);
-        var h = xmp.match(/stDim:h\s*=\s*"(\d+)"/);
-        if (w && h) {
+        var w = xmp.match(/stDim:w\s*=\s*"(\d+)"/) || xmp.match(/<stDim:w>\s*(\d+)\s*</);
+        var h = xmp.match(/stDim:h\s*=\s*"(\d+)"/) || xmp.match(/<stDim:h>\s*(\d+)\s*</);
+        if (w && h && fPlausibleSize(w[1], h[1])) {
             fLog(log, 'source dimensions from XMP: ' + w[1] + 'x' + h[1]);
             return { width: parseInt(w[1], 10), height: parseInt(h[1], 10), from: 'xmp' };
         }
+        fLog(log, 'XMP carries no frame size');
+    } else {
+        fLog(log, 'no XMP metadata on this item');
     }
 
     var meta = fSafe(function () { return projectItem.getProjectMetadata(); }, '');
     if (meta) {
-        var m = meta.match(/ImageSize[^>]*>\s*(\d+)\s*[xX×]\s*(\d+)/);
-        if (m) {
+        var m = meta.match(/Column\.Intrinsic\.(?:VideoInfo|ImageSize)[^>]*>\s*(\d+)\s*[xX×]\s*(\d+)/);
+        if (m && fPlausibleSize(m[1], m[2])) {
             fLog(log, 'source dimensions from project metadata: ' + m[1] + 'x' + m[2]);
             return { width: parseInt(m[1], 10), height: parseInt(m[2], 10), from: 'projectMetadata' };
         }
+        fLog(log, 'project metadata carries no Video Info size');
     }
 
-    fLog(log, 'could not read source dimensions from metadata');
+    var mediaPath = fMediaPath(projectItem);
+    if (mediaPath) {
+        var header = fIsoVideoSizeOfFile(mediaPath);
+        if (header && fPlausibleSize(header.width, header.height)) {
+            fLog(log, 'source dimensions from the file header: ' + header.width + 'x' + header.height +
+                      (header.rotated ? ' (rotated track)' : ''));
+            return { width: header.width, height: header.height, from: 'fileHeader' };
+        }
+        fLog(log, 'file header unreadable (not MP4/MOV, or no video track)');
+    }
+
+    fLog(log, 'could not determine source dimensions');
     return null;
+}
+
+function fPlausibleSize(w, h) {
+    var width = Number(w), height = Number(h);
+    return width >= 16 && height >= 16 && width <= 16384 && height <= 16384;
 }
 
 function fMediaPath(projectItem) {
@@ -139,6 +161,9 @@ function fResolveSource(log) {
                     origin: 'sequenceSelection',
                     inPoint: fSafe(function () { return trackItem.inPoint.seconds; }, 0),
                     outPoint: fSafe(function () { return trackItem.outPoint.seconds; }, 0),
+                    // Sequence time, which is what a rendered still is addressed by.
+                    seqStart: fSafe(function () { return trackItem.start.seconds; }, null),
+                    seqEnd: fSafe(function () { return trackItem.end.seconds; }, null),
                     sequence: seq
                 };
             }
@@ -246,6 +271,8 @@ function framerInspect() {
                 inPoint: src.inPoint,
                 outPoint: src.outPoint,
                 clipDuration: src.outPoint - src.inPoint,
+                seqStart: (src.seqStart === undefined) ? null : src.seqStart,
+                seqEnd: (src.seqEnd === undefined) ? null : src.seqEnd,
                 mediaDuration: duration,
                 hasAudio: fSafe(function () { return src.projectItem.hasAudio(); }, false),
                 hasVideo: fSafe(function () { return src.projectItem.hasVideo(); }, true)
@@ -262,64 +289,157 @@ function framerInspect() {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point: export a reference still from the active sequence
+// Entry point: render reference stills from the active sequence
 // ---------------------------------------------------------------------------
 
+var STILL_PREFIX = 'framer_still_';
+
+function fIsWindows() {
+    return fStr(fSafe(function () { return $.os; }, '')).indexOf('Windows') !== -1;
+}
+
+/** Remove stills left over from earlier renders; they are only ever temporary. */
+function fCleanStills(folder) {
+    var old = fSafe(function () { return folder.getFiles(STILL_PREFIX + '*'); }, null);
+    if (!old) { return; }
+    for (var i = 0; i < old.length; i++) {
+        fSafe(function () { old[i].remove(); return true; }, false);
+    }
+}
+
 /**
- * Fallback for codecs the panel's Chromium cannot decode. Renders the active
- * sequence at a given time, so anything above the clip on higher tracks is
- * included - the panel warns about that.
+ * Wait for Premiere to finish writing one of `paths`. The export call can
+ * return before the file is on disk, and a file that is still growing would
+ * load as a broken image, so it has to exist and hold its size across a check.
  */
-function framerExportStill(argJson) {
-    var log = [];
-    try {
-        var args = JSON.parse(argJson || '{}');
-        var seq = fSafe(function () { return app.project.activeSequence; }, null);
-        if (!seq) { return fError('No active sequence to render a still from.', log); }
-
-        var folder = Folder(args.folder || (Folder.temp.fsName + '/framer'));
-        if (!folder.exists) { folder.create(); }
-
-        var seconds = (args.seconds !== undefined) ? Number(args.seconds)
-                    : fSafe(function () { return seq.getPlayerPosition().seconds; }, 0);
-
-        var time = new Time();
-        time.seconds = seconds;
-
-        var base = folder.fsName + '/still_' + (new Date()).getTime();
-        var attempts = [
-            { ext: '.png', fn: 'exportFramePNG' },
-            { ext: '.jpg', fn: 'exportFrameJPEG' },
-            { ext: '.tga', fn: 'exportFrameTarga' }
-        ];
-
-        for (var i = 0; i < attempts.length; i++) {
-            var name = attempts[i].fn;
-            if (!fSafe(function () { return typeof seq[name] === 'function'; }, false)) {
-                fLog(log, name + ' unavailable');
-                continue;
-            }
-            var out = base + attempts[i].ext;
-            var ok = false;
-            // Different builds want ticks or a Time object.
-            try { seq[name](time.ticks, out); ok = File(out).exists; } catch (e1) { fLog(log, name + '(ticks) failed: ' + e1); }
-            if (!ok) {
-                try { seq[name](time, out); ok = File(out).exists; } catch (e2) { fLog(log, name + '(Time) failed: ' + e2); }
-            }
-            if (ok) {
-                fLog(log, 'still written with ' + name);
-                return fResult({
-                    ok: true, path: out, seconds: seconds,
-                    sequence: fSafe(function () { return seq.name; }, ''),
-                    width: fSafe(function () { return seq.frameSizeHorizontal; }, null),
-                    height: fSafe(function () { return seq.frameSizeVertical; }, null)
-                }, log);
+function fWaitForFile(paths, timeoutMs) {
+    var waited = 0;
+    var step = 100;
+    var lastSize = -1;
+    while (waited <= timeoutMs) {
+        for (var i = 0; i < paths.length; i++) {
+            var f = new File(paths[i]);
+            if (f.exists && f.length > 0) {
+                if (f.length === lastSize) { return f; }
+                lastSize = f.length;
             }
         }
+        $.sleep(step);
+        waited += step;
+    }
+    return null;
+}
 
-        return fError('This version of Premiere would not export a still frame.', log);
+/**
+ * Render the frame under the playhead (optionally moving it first).
+ *
+ * Premiere exposes frame export on the QE sequence, not the DOM one:
+ * exportFramePNG(timecode, path) takes a timecode string and a path WITHOUT an
+ * extension, and appends ".png" itself. That is the call Adobe's own sample
+ * panel makes. The DOM Sequence.exportFramePNG is tried afterwards only
+ * because it has appeared in some builds.
+ */
+function fRenderFrame(seq, qeSeq, seconds, folder, index, log) {
+    if (seconds !== null && seconds !== undefined) {
+        var target = new Time();
+        target.seconds = Number(seconds);
+        fSafe(function () { seq.setPlayerPosition(target.ticks); return true; }, false);
+    }
+    var at = fSafe(function () { return seq.getPlayerPosition().seconds; }, seconds);
+
+    var sep = fIsWindows() ? '\\' : '/';
+    var base = folder.fsName + sep + STILL_PREFIX + (new Date()).getTime() + '_' + index;
+
+    var attempts = [];
+    if (qeSeq) {
+        attempts.push({ label: 'QE exportFramePNG', outputs: [base + '.png', base], run: function () {
+            qeSeq.exportFramePNG(qeSeq.CTI.timecode, base);
+        } });
+        attempts.push({ label: 'QE exportFrameJPEG', outputs: [base + '.jpg', base], run: function () {
+            qeSeq.exportFrameJPEG(qeSeq.CTI.timecode, base);
+        } });
+    }
+    attempts.push({ label: 'Sequence.exportFramePNG', outputs: [base + '.png'], run: function () {
+        var t = seq.getPlayerPosition();
+        seq.exportFramePNG(t.ticks, base + '.png');
+    } });
+
+    for (var i = 0; i < attempts.length; i++) {
+        var attempt = attempts[i];
+        try {
+            attempt.run();
+        } catch (e) {
+            fLog(log, attempt.label + ' unavailable: ' + e);
+            continue;
+        }
+        var file = fWaitForFile(attempt.outputs, 8000);
+        if (file) {
+            if (index === 0) { fLog(log, 'stills rendered with ' + attempt.label); }
+            return { path: file.fsName, seconds: at };
+        }
+        fLog(log, attempt.label + ' ran but no file appeared');
+    }
+    return null;
+}
+
+/**
+ * framerExportStills({times: [seconds, ...]})
+ *
+ * Render frames of the active sequence to disk, at sequence times. With no
+ * times, renders the frame under the playhead. The playhead is put back where
+ * it was afterwards.
+ *
+ * This is the primary way the panel gets a reference frame: Premiere decodes
+ * whatever it can import, while the panel's embedded browser cannot decode
+ * most camera and capture codecs.
+ */
+function framerExportStills(argJson) {
+    var log = [];
+    var seq = null;
+    var original = null;
+    try {
+        var args = JSON.parse(argJson || '{}');
+        seq = fSafe(function () { return app.project.activeSequence; }, null);
+        if (!seq) { return fError('No active sequence to render a still from.', log); }
+
+        var qeSeq = fSafe(function () { app.enableQE(); return qe.project.getActiveSequence(); }, null);
+        if (!qeSeq) { fLog(log, 'QE is unavailable - trying the standard DOM only'); }
+
+        var folder = new Folder(Folder.temp.fsName + '/framer');
+        if (!folder.exists) { folder.create(); }
+        fCleanStills(folder);
+
+        var times = (args.times && args.times.length) ? args.times : [null];
+        // Only remember (and later restore) the playhead if we are going to move it.
+        if (times[0] !== null) { original = fSafe(function () { return seq.getPlayerPosition(); }, null); }
+
+        var stills = [];
+        for (var i = 0; i < times.length; i++) {
+            var rendered = fRenderFrame(seq, qeSeq, times[i], folder, i, log);
+            if (rendered) { stills.push(rendered); }
+            else if (i === 0) { break; }           // if the first fails, the rest will too
+        }
+
+        if (!stills.length) {
+            return fError('Premiere would not render a still frame from the active sequence.', log);
+        }
+        if (stills.length < times.length) {
+            fLog(log, 'rendered ' + stills.length + ' of ' + times.length + ' stills');
+        }
+
+        return fResult({
+            ok: true,
+            stills: stills,
+            sequence: fSafe(function () { return seq.name; }, ''),
+            width: fSafe(function () { return seq.frameSizeHorizontal; }, null),
+            height: fSafe(function () { return seq.frameSizeVertical; }, null)
+        }, log);
     } catch (e) {
         return fError('still export failed: ' + e, log);
+    } finally {
+        if (seq && original) {
+            fSafe(function () { seq.setPlayerPosition(original.ticks); return true; }, false);
+        }
     }
 }
 

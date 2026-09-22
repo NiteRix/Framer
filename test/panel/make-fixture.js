@@ -1,7 +1,8 @@
 /**
- * Records the fixture the panel smoke test runs against: a synthetic gameplay
- * capture with a webcam overlay in a known position, encoded by Chromium's own
- * MediaRecorder so the panel gets a genuinely decodable file.
+ * Records the fixtures the panel smoke test runs against: a synthetic gameplay
+ * capture with a webcam overlay in a known position, as PNG frames (standing
+ * in for the stills Premiere renders) and as a WebM the panel's browser can
+ * decode (for the fallback path).
  *
  *   node test/panel/make-fixture.js
  *
@@ -81,10 +82,23 @@ const OUT = path.join(__dirname, 'capture.webm');
     const bytes = new Uint8Array(await blob.arrayBuffer());
     let binary = '';
     for (let i = 0; i < bytes.length; i++) { binary += String.fromCharCode(bytes[i]); }
-    return btoa(binary);
+
+    // PNG frames of the same animation, standing in for the stills Premiere
+    // renders - which is how the panel gets its frames in real use.
+    const stills = [];
+    for (let k = 0; k < 8; k++) {
+      draw(0.2 + k * 0.28);
+      stills.push(canvas.toDataURL('image/png').split(',')[1]);
+    }
+    return { video: btoa(binary), stills: stills };
   });
 
-  fs.writeFileSync(OUT, Buffer.from(b64, 'base64'));
+  fs.writeFileSync(OUT, Buffer.from(b64.video, 'base64'));
   console.log('wrote ' + OUT + ' (' + fs.statSync(OUT).size + ' bytes)');
+  b64.stills.forEach(function (data, k) {
+    const file = path.join(__dirname, 'still-' + k + '.png');
+    fs.writeFileSync(file, Buffer.from(data, 'base64'));
+  });
+  console.log('wrote ' + b64.stills.length + ' stills (still-0.png ... still-' + (b64.stills.length - 1) + '.png)');
   await browser.close();
 })();

@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.0.1
+
+Fixes the panel never showing a reference frame, and the clip size coming up
+unknown. Both were found on Premiere 26.0.1 with an H.264 MP4.
+
+### Reference frames are rendered by Premiere
+
+1.0.0 read the reference frame by decoding the media file in the panel, and
+fell back to `Sequence.exportFramePNG` when that failed. Both failed together:
+the panel's embedded browser opened the MP4 but reported its video track as
+0x0, and `exportFramePNG` does not exist on the standard sequence object in
+Premiere 26.
+
+Frame export in Premiere lives on the QE sequence. Its `exportFramePNG` takes
+a timecode string and a path without an extension, and appends `.png` itself;
+Adobe's own sample panel calls it that way. Framer now moves the playhead,
+renders through QE, waits for the file to finish writing, and puts the
+playhead back. That is the primary path, and it handles any codec Premiere
+can import. Decoding in the panel is kept only as a fallback.
+
+Scrubbing and auto-detect use it too: detection has Premiere render eight
+frames from across the clip, in sequence time, so detection still gets
+motion evidence to work with.
+
+### The clip's pixel size is read from the file
+
+The XMP lookup only understood the attribute form (`stDim:w="1920"`), not the
+element form (`<stDim:w>1920</stDim:w>`), and the project-metadata lookup
+looked for an `ImageSize` column when Premiere's is `VideoInfo`. Both are
+fixed, and behind them is a new fallback that reads the size from the MP4/MOV
+header itself - `moov` → `trak` → `tkhd`, only header bytes, including 64-bit
+box sizes and `moov` stored after the media, as recorders write it. Rotated
+phone footage reports its displayed size.
+
+If even that fails, the panel takes the sequence frame size, says so, and
+points at where to correct it, instead of leaving the size blank.
+
+### Smaller fixes
+
+- **Copy log** copies. CEP's browser has no async Clipboard API, so it had
+  been falling back to selecting the text.
+- A warning when the clip's aspect ratio does not match the sequence it is
+  read from, since the rendered frame would not line up with the clip.
+
+### Testing
+
+The host script now runs under Node against a fake Premiere shaped like the
+build that failed: no DOM frame export, QE present, metadata without a frame
+size, and an export that lands on disk after the call returns.
+`test/host.test.js` covers still rendering and dimension lookup, and
+`test/mp4dims.test.js` covers the header reader, including a virtual 6 GB file
+where the size is found after reading under 2 KB. 65 tests, up from 38.
+
+The browser smoke test was rewritten. It had fed the panel a WebM the browser
+could decode, which is how this shipped. It now uses an undecodable MP4 with
+Premiere-rendered stills as the normal case, and adds scenarios for a missing
+size, a mismatched aspect ratio, the decode fallback, and total failure.
+
 ## 1.0.0
 
 First release.

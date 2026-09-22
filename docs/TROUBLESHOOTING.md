@@ -60,16 +60,35 @@ but a non-English install can still miss. The layer is still placed, scaled and
 positioned — only the optional Crop, Gaussian Blur or Drop Shadow is missing,
 and you can add it by hand. The panel log (Advanced) names which one failed.
 
-## No reference frame / "The panel cannot decode this codec"
+## No reference frame
 
-The preview reads your media file directly, so it supports what a browser
-supports: H.264, HEVC, VP9, AV1. For ProRes, DNxHD, MXF or camera raw, Framer
-falls back to a still rendered by Premiere from the **active sequence** — which
-composites every visible track, not just your clip. Solo the clip's track, or
-hide the ones above it, if the still looks wrong.
+Premiere renders the reference frame from the **active sequence**, so:
 
-If neither works, type the source pixel size into **Source size is wrong?** and
-mark the regions numerically; everything downstream only needs the dimensions.
+1. **Select the clip on a sequence that is open and active.** A clip picked
+   in the Project panel gives Framer no sequence time to render from, so it
+   renders whatever is under the playhead.
+2. **Make sure the clip is visible there.** A disabled track, a clip hidden
+   under another, or the playhead parked off the clip all produce the wrong
+   frame, because Framer shows exactly what the sequence shows.
+
+If Premiere refuses to render at all, the log under **Advanced** says which
+export call failed. Framer then tries decoding the file in the panel, which
+works for WebM and a few other browser formats but usually not H.264 MP4s.
+
+## "Assumed from the sequence" next to the source size
+
+Framer could not read the clip's own pixel size - not from Premiere's metadata
+and not from the file header (which covers MP4 and MOV) - so it assumed the
+clip matches the sequence. That is right whenever the clip fills the sequence
+at 100%. If it does not, open **Source size is wrong?**, type the real size,
+and press Apply; everything downstream recalculates.
+
+## "The reference frame will not line up with the clip"
+
+The clip and the sequence have different aspect ratios, so the rendered frame
+has the clip letterboxed or cropped inside it, and regions drawn on it will not
+map onto the clip. Read the selection from a sequence that matches the clip:
+right-click the clip in the Project panel → **New Sequence From Clip**.
 
 ## Auto-detect picks the wrong box
 

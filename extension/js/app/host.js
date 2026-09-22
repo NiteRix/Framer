@@ -89,7 +89,7 @@
     ping: function () { return withHost('framerPing'); },
     diagnostics: function () { return withHost('framerDiagnostics'); },
     inspect: function () { return withHost('framerInspect'); },
-    exportStill: function (opts) { return withHost('framerExportStill', opts || {}); },
+    exportStills: function (opts) { return withHost('framerExportStills', opts || {}); },
     build: function (plan) { return withHost('framerBuild', plan); },
     calibrateCrop: function (opts) { return withHost('framerCalibrateCrop', opts || {}); }
   };

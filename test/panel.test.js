@@ -132,8 +132,11 @@ test('the host script exposes every entry point the bridge calls', function () {
   }
 });
 
-test('the host script stays within ExtendScript ES3 syntax', function () {
-  var jsx = read('extension/jsx/framer.jsx');
+test('the host scripts stay within ExtendScript ES3 syntax', function () {
+  ['framer.jsx', 'mp4dims.jsx'].forEach(function (name) { checkEs3(name, read('extension/jsx/' + name)); });
+});
+
+function checkEs3(name, jsx) {
   // Strip comments and strings before looking for modern syntax.
   var code = jsx
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -152,6 +155,6 @@ test('the host script stays within ExtendScript ES3 syntax', function () {
     [/\bclass\s+\w/, 'class']
   ];
   for (var i = 0; i < banned.length; i++) {
-    assert.ok(!banned[i][0].test(code), 'no ' + banned[i][1] + ' in the host script');
+    assert.ok(!banned[i][0].test(code), 'no ' + banned[i][1] + ' in ' + name);
   }
-});
+}

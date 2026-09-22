@@ -56,7 +56,7 @@
 
       video.onloadedmetadata = function () {
         if (!video.videoWidth || !video.videoHeight) {
-          done(new Error('The panel could not read this codec.'));
+          done(new Error('the panel\'s browser cannot decode this file\'s video'));
           return;
         }
         done(null, {
@@ -67,7 +67,7 @@
         });
       };
       video.onerror = function () {
-        done(new Error('The panel cannot decode this codec - use a Premiere still instead.'));
+        done(new Error('the panel\'s browser cannot open this file'));
       };
 
       video.src = fileUrl(path);

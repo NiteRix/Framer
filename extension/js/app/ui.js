@@ -20,7 +20,9 @@
     sourceDims: null,      // {width,height} - from metadata, media, or typed in
     frameImage: null,      // <img> or <canvas> used for both previews
     video: null,           // decoded media, when the panel can read the codec
-    frameOrigin: '',
+    frameOrigin: '',       // 'premiere' | 'media file' | ''
+    dimsAssumed: false,    // true when the source size was taken from the sequence frame
+    frameRequest: 0,       // guards against a slow render overwriting a newer one
     regions: null,
     layout: 'overlay',
     options: {},           // per layout id
@@ -125,7 +127,7 @@
 
     el['btn-read'].disabled = state.busy;
     el['btn-frame'].disabled = state.busy || !hasSource;
-    el.scrub.disabled = state.busy || !state.video;
+    el.scrub.disabled = state.busy || !(state.video || (state.frameOrigin === 'premiere' && clipRange()));
     el['btn-detect'].disabled = state.busy || !hasFrame;
     el['btn-suggest'].disabled = state.busy || !hasDims;
     el['btn-build'].disabled = state.busy || !hasSource || !hasDims;
@@ -392,11 +394,13 @@
         : 'whole clip';
       el['seq-name'].placeholder = (res.source.name || 'clip') + ' - Vertical';
 
+      state.dimsAssumed = false;
       if (res.source.width && res.source.height) {
         setSourceDims({ width: res.source.width, height: res.source.height },
                       'Premiere (' + res.source.dimensionsFrom + ')');
       } else {
-        el['fact-size'].textContent = 'unknown - loading media to measure it';
+        state.sourceDims = null;
+        el['fact-size'].textContent = 'unknown - Premiere could not report it';
       }
 
       log('source: ' + res.source.name + ' | ' + (res.source.mediaPath || 'no media path'));
@@ -421,54 +425,128 @@
     writeRegionFields();
   }
 
+  /** The selected clip's span in sequence time, or null for a project-panel pick. */
+  function clipRange() {
+    var src = state.source;
+    if (!src || src.seqStart === null || src.seqStart === undefined || !(src.seqEnd > src.seqStart)) {
+      return null;
+    }
+    return { from: src.seqStart, to: src.seqEnd };
+  }
+
+  /** Sequence time a fraction of the way through the clip, kept clear of the cuts. */
+  function timeInClip(range, fraction) {
+    var f = Math.min(0.97, Math.max(0.03, fraction));
+    return range.from + (range.to - range.from) * f;
+  }
+
   /**
-   * Prefer the media file: it shows the clip alone, at source resolution, and
-   * can be scrubbed. Fall back to a still rendered by Premiere for codecs the
-   * panel cannot decode - that one includes any higher tracks, so say so.
+   * Premiere renders the reference frame. It decodes anything it can import,
+   * whereas the panel's embedded browser cannot decode ordinary H.264 MP4s -
+   * so decoding in the panel is only the fallback, for when Premiere refuses.
    */
   function loadReferenceFrame() {
     if (!state.source) { return Promise.resolve(); }
-    var path = state.source.mediaPath;
+    var request = ++state.frameRequest;
 
-    var viaMedia = path
-      ? media.loadVideo(path).then(function (loaded) {
-          state.video = loaded.video;
-          if (!state.sourceDims || state.sourceDims.width !== loaded.width) {
-            setSourceDims({ width: loaded.width, height: loaded.height }, 'media file');
-          }
-          var from = state.source.inPoint || 0;
-          var to = state.source.outPoint > from ? state.source.outPoint : (loaded.duration || 0);
-          var at = from + (to - from) * state.scrub;
-          return media.grabFrame(loaded.video, at, 1280).then(function (frameCanvas) {
-            state.frameImage = frameCanvas;
-            state.frameOrigin = 'media file';
-            el['fact-frame'].textContent = 'media file at ' + at.toFixed(2) + 's';
-          });
-        })
-      : Promise.reject(new Error('Premiere did not report a media path for this clip.'));
-
-    return viaMedia.then(function () {
-      setStatus('Reference frame loaded. Pick the webcam region, or auto-detect it.', 'ok');
+    return renderStill().then(function (loaded) {
+      if (request !== state.frameRequest) { return; }
+      showStill(loaded);
       afterFrameLoaded();
-    }).catch(function (mediaErr) {
-      log('media path unusable: ' + mediaErr.message);
-      return host.exportStill({ seconds: undefined }).then(function (res) {
-        return media.loadImage(res.path).then(function (img) {
-          state.frameImage = img;
-          state.frameOrigin = 'sequence still';
-          el['fact-frame'].textContent = 'sequence still (' + res.width + ' x ' + res.height + ')';
-          if (!state.sourceDims) {
-            setSourceDims({ width: res.width, height: res.height }, 'sequence still');
-          }
-          setStatus('Using a still rendered from the sequence - it shows every visible track, ' +
-                    'not just this clip.', 'warn');
-          afterFrameLoaded();
-        });
-      }).catch(function (stillErr) {
-        setStatus('No reference frame: ' + mediaErr.message + ' Still export also failed: ' +
-                  stillErr.message, 'error');
+    }).catch(function (stillErr) {
+      if (request !== state.frameRequest) { return; }
+      log('Premiere could not render a still: ' + stillErr.message);
+      return loadFromMedia().then(function () {
+        if (request !== state.frameRequest) { return; }
+        setStatus('Reference frame decoded by the panel. Pick the webcam region, or auto-detect it.', 'ok');
+        afterFrameLoaded();
+      }).catch(function (mediaErr) {
+        if (request !== state.frameRequest) { return; }
+        setStatus('No reference frame. Premiere would not render one (' + stillErr.message +
+                  ') and the panel could not decode the file (' + mediaErr.message + ').', 'error');
         afterFrameLoaded();
       });
+    });
+  }
+
+  /** Ask Premiere for the frame at the scrub position and load it. */
+  function renderStill() {
+    var range = clipRange();
+    var args = range ? { times: [timeInClip(range, state.scrub)] } : {};
+    return host.exportStills(args).then(function (res) {
+      var still = res.stills[0];
+      return media.loadImage(still.path).then(function (img) {
+        return { img: img, still: still, width: res.width, height: res.height };
+      });
+    });
+  }
+
+  function showStill(loaded) {
+    state.video = null;
+    state.frameImage = loaded.img;
+    state.frameOrigin = 'premiere';
+    el['fact-frame'].textContent = 'rendered by Premiere at ' + loaded.still.seconds.toFixed(2) + 's';
+
+    if (!state.sourceDims) {
+      // Nothing reported the clip's own size, so the sequence frame is the best
+      // evidence left. Right whenever the clip fills the sequence unscaled.
+      state.dimsAssumed = true;
+      setSourceDims({ width: loaded.width, height: loaded.height }, 'assumed from the sequence');
+      setStatus('Could not read the clip’s pixel size, so it is assumed to match the sequence (' +
+                loaded.width + ' x ' + loaded.height + '). If the clip is a different size, set it under ' +
+                '“Source size is wrong?”.', 'warn');
+      return;
+    }
+
+    var clipAspect = state.sourceDims.width / state.sourceDims.height;
+    var frameAspect = loaded.width / loaded.height;
+    if (Math.abs(clipAspect - frameAspect) > 0.01) {
+      setStatus('The sequence is ' + loaded.width + ' x ' + loaded.height + ' but the clip is ' +
+                state.sourceDims.width + ' x ' + state.sourceDims.height + ', so the reference frame ' +
+                'will not line up with the clip. Read the selection from a sequence that matches it.', 'warn');
+      return;
+    }
+    if (!state.dimsAssumed) {
+      setStatus('Reference frame loaded. Pick the webcam region, or auto-detect it.', 'ok');
+    }
+  }
+
+  /** Fallback: decode the media file in the panel. Only some codecs work. */
+  function loadFromMedia() {
+    var path = state.source.mediaPath;
+    if (!path) { return Promise.reject(new Error('no media path')); }
+    return media.loadVideo(path).then(function (loaded) {
+      state.video = loaded.video;
+      if (!state.sourceDims || state.dimsAssumed) {
+        state.dimsAssumed = false;
+        setSourceDims({ width: loaded.width, height: loaded.height }, 'media file');
+      }
+      return grabFromVideo();
+    });
+  }
+
+  function grabFromVideo() {
+    var from = state.source.inPoint || 0;
+    var to = state.source.outPoint > from ? state.source.outPoint : (state.video.duration || 0);
+    var at = from + (to - from) * state.scrub;
+    return media.grabFrame(state.video, at, 1280).then(function (frameCanvas) {
+      state.frameImage = frameCanvas;
+      state.frameOrigin = 'media file';
+      el['fact-frame'].textContent = 'decoded by the panel at ' + at.toFixed(2) + 's';
+    });
+  }
+
+  /** Scrubbing: fetch a new frame the same way the current one was fetched. */
+  function refreshFrame() {
+    var request = ++state.frameRequest;
+    var next = state.frameOrigin === 'premiere' ? renderStill().then(function (loaded) {
+      if (request === state.frameRequest) { showStill(loaded); }
+    }) : (state.video ? grabFromVideo() : Promise.resolve());
+
+    return next.then(function () {
+      if (request === state.frameRequest) { afterFrameLoaded(); }
+    }).catch(function (err) {
+      log('could not refresh the frame: ' + err.message);
     });
   }
 
@@ -490,7 +568,18 @@
     el['detect-note'].textContent = '';
 
     var framesPromise;
-    if (state.video) {
+    var range = clipRange();
+    if (state.frameOrigin === 'premiere' && range) {
+      // Motion evidence needs frames from across the clip; Premiere renders them.
+      var times = [];
+      for (var i = 0; i < 8; i++) { times.push(timeInClip(range, (i + 0.5) / 8)); }
+      setStatus('Rendering ' + times.length + ' frames in Premiere to look for the webcam box...', 'busy');
+      framesPromise = host.exportStills({ times: times }).then(function (res) {
+        return Promise.all(res.stills.map(function (still) { return media.loadImage(still.path); }));
+      }).then(function (images) {
+        return images.map(function (img) { return media.imageToFrame(img, 320); });
+      });
+    } else if (state.video) {
       var from = state.source ? (state.source.inPoint || 0) : 0;
       var to = state.source && state.source.outPoint > from ? state.source.outPoint : 0;
       framesPromise = media.sampleFrames(state.video, 10, { width: 320, from: from, to: to });
@@ -666,10 +755,8 @@
     el.scrub.addEventListener('input', debounce(function () {
       state.scrub = Number(el.scrub.value);
       persist();
-      if (state.video) {
-        loadReferenceFrame();
-      }
-    }, 220));
+      refreshFrame();
+    }, 350));
 
     el['tab-gameplay'].addEventListener('click', function () {
       ensurePicker().setActive('gameplay');
@@ -737,13 +824,29 @@
     });
 
     el['btn-copy-log'].addEventListener('click', function () {
-      var text = logLines.join('\n');
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () {
-          setStatus('Log copied to the clipboard.', 'ok');
-        }).catch(function () { selectLog(); });
-      } else { selectLog(); }
+      if (copyText(logLines.join('\n'))) {
+        setStatus('Log copied to the clipboard.', 'ok');
+      } else {
+        selectLog();
+      }
     });
+
+    /**
+     * CEP's browser has no async Clipboard API, so copy the old way: through a
+     * selected, off-screen textarea and execCommand.
+     */
+    function copyText(text) {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;-webkit-user-select:text;user-select:text;';
+      document.body.appendChild(area);
+      area.select();
+      var copied = false;
+      try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+      document.body.removeChild(area);
+      return copied;
+    }
 
     el['btn-clear-log'].addEventListener('click', function () {
       logLines = [];
