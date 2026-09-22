@@ -8,8 +8,8 @@
 
 var h = require('./harness');
 var test = h.test, assert = h.assert;
-var L = require('../js/core/layout.js');
-var D = require('../js/core/detect.js');
+var L = require('../extension/js/core/layout.js');
+var D = require('../extension/js/core/detect.js');
 var simulate = require('./layout.test.js').simulate;
 
 var SOURCE = { width: 1920, height: 1080 };

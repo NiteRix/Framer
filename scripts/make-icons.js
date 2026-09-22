@@ -3,7 +3,7 @@
  * it, which is the whole extension in 23 pixels.
  *
  * Written as code rather than committed art so the icons can be tweaked
- * without a graphics editor:  node tools/make-icons.js
+ * without a graphics editor:  node scripts/make-icons.js
  */
 'use strict';
 
@@ -93,10 +93,10 @@ function makeIcon(frameColor, accentColor) {
   return encodePng(SIZE, SIZE, buf);
 }
 
-var outDir = path.join(__dirname, '..', 'icons');
+var outDir = path.join(__dirname, '..', 'extension', 'icons');
 if (!fs.existsSync(outDir)) { fs.mkdirSync(outDir, { recursive: true }); }
 
 fs.writeFileSync(path.join(outDir, 'icon-normal.png'), makeIcon('#9aa3b0', '#4aa8ff'));
 fs.writeFileSync(path.join(outDir, 'icon-rollover.png'), makeIcon('#e4e7ec', '#78c0ff'));
 
-process.stdout.write('wrote icons/icon-normal.png and icons/icon-rollover.png\n');
+process.stdout.write('wrote extension/icons/icon-normal.png and extension/icons/icon-rollover.png\n');

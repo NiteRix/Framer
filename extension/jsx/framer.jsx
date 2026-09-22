@@ -15,7 +15,7 @@
  * and fall back to documented parameter ordering.
  */
 
-#include "json2.js"
+// @include "json2.jsx"
 
 // ---------------------------------------------------------------------------
 // Small helpers (ES3 - no forEach/map/indexOf on arrays, no let/const)

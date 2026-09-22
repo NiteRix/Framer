@@ -5,3 +5,7 @@ test/panel/shot-*.png
 # Packaging output
 *.zxp
 node_modules/
+
+# Build output
+dist/
+stage/

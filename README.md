@@ -23,30 +23,37 @@ values, so you can keep editing it by hand afterwards.
 
 ## Install
 
-Framer is an unsigned CEP extension, so Premiere needs debug mode enabled. The
-install scripts do that and place the extension for you.
+Grab the latest build from [Releases](https://github.com/NiteRix/Framer/releases):
 
-**macOS**
+| You are on | Get |
+|---|---|
+| **Windows** | `Framer-1.0.0-Setup.exe` — run it, restart Premiere |
+| **macOS** | `Framer-1.0.0-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
+
+The portable zip works on Windows too: unpack it and double-click
+`Install-Windows.bat`. Both install into your own user folder, so there is no
+admin prompt. Neither is signed with an Adobe certificate, so the installer
+also switches on CEP's "allow unsigned extensions" setting — that is what makes
+the panel load at all.
+
+Then open it from **Window → Extensions → Framer**.
+
+To remove it, run `Uninstall-Windows.bat` / `Uninstall-Mac.command`, or use
+Add/Remove Programs on Windows if you used the installer.
+
+Requires Premiere Pro CC 2019 (13.0) or later.
+
+**One Premiere setting matters:** Preferences → Media → **Default Media
+Scaling** must be **None**. On any other setting Premiere rescales the clips
+Framer places and the layers will not match the preview.
+
+### From a checkout
 
 ```bash
 git clone https://github.com/NiteRix/Framer.git
 cd Framer
-tools/install.sh          # or: tools/install.sh --copy
+./Install-Mac.command          # or: Install-Windows.bat
 ```
-
-**Windows**
-
-```bat
-git clone https://github.com/NiteRix/Framer.git
-cd Framer
-tools\install.bat
-```
-
-Restart Premiere, then open **Window → Extensions → Framer (Vertical Reframe)**.
-
-To remove it: `tools/install.sh --uninstall` / `tools\install.bat /uninstall`.
-
-Requires Premiere Pro CC 2019 (13.0) or later.
 
 ## Using it
 
@@ -134,13 +141,13 @@ always overrule it.
 ## Development
 
 ```bash
-npm test              # 36 tests: geometry, detection, panel wiring - no deps
+npm test              # 38 tests: geometry, detection, panel wiring, syntax
 ```
 
-The geometry and detection modules (`js/core/`) are dependency-free and run
-under Node, which is what the suite exercises. `test/panel/smoke.js` boots the
-actual panel in Chromium against a stubbed CEP host and drives it end to end —
-it caught a preview bug that unit tests could not:
+The geometry and detection modules (`extension/js/core/`) are dependency-free
+and run under Node, which is what the suite exercises. `test/panel/smoke.js`
+boots the actual panel in Chromium against a stubbed CEP host and drives it end
+to end — it caught a preview bug that unit tests could not:
 
 ```bash
 npm install --no-save playwright && npx playwright install chromium
@@ -148,27 +155,44 @@ npm run fixture       # records a synthetic capture with a known webcam box
 npm run test:panel    # screenshots of each template land in test/panel/
 ```
 
+Set `FRAMER_EXT` to point that test at a staged or installed payload rather
+than the checkout, which is how a build is verified before release:
+
+```bash
+FRAMER_EXT="$HOME/Library/Application Support/Adobe/CEP/extensions/com.niterix.framer" \
+  npm run test:panel
+```
+
 With the extension installed, `.debug` exposes the panel's dev tools at
 <http://localhost:8088> while Premiere is running.
 
+Pushing to any branch builds a Windows `.exe` and a portable zip via
+[`.github/workflows/build-installer.yml`](.github/workflows/build-installer.yml);
+they land as artifacts on the run. Tagging `v*` — or running the workflow
+manually with a `release_tag` — attaches them to a GitHub release.
+
 ```
-CSXS/manifest.xml     extension manifest (CEP 9-12, Premiere 13.0+)
-index.html            panel markup
-css/framer.css        panel styling
-js/core/layout.js     templates and the crop/scale/position solver
-js/core/detect.js     webcam rectangle detection
-js/app/host.js        promise bridge to ExtendScript
-js/app/media.js       media loading and frame sampling
-js/app/preview.js     region picker and composite preview
-js/app/ui.js          panel controller
-jsx/framer.jsx        Premiere host script: sequence building, effects
-tools/                installers and icon generation
+extension/                     the payload that gets installed
+  CSXS/manifest.xml            extension manifest (CEP 9-12, Premiere 13.0+)
+  index.html                   panel markup
+  css/framer.css               panel styling
+  js/core/layout.js            templates and the crop/scale/position solver
+  js/core/detect.js            webcam rectangle detection
+  js/app/host.js               promise bridge to ExtendScript
+  js/app/media.js              media loading and frame sampling
+  js/app/preview.js            region picker and composite preview
+  js/app/ui.js                 panel controller
+  jsx/framer.jsx               Premiere host script: sequence building, effects
+installer/windows/             Inno Setup script for the .exe
+scripts/make-icons.js          regenerates the panel icons
+test/                          test suite
+docs/TROUBLESHOOTING.md        when something does not work
 ```
 
-To distribute it to people who should not have to enable debug mode, sign the
-folder into a `.zxp` with Adobe's `ZXPSignCmd`.
+To distribute it without the unsigned-extension step, sign `extension/` into a
+`.zxp` with Adobe's `ZXPSignCmd`.
 
 ## Licence
 
-MIT. Bundles Adobe's `CSInterface.js` and Douglas Crockford's `json2.js`, both
+MIT. Bundles Adobe's `CSInterface.js` and Douglas Crockford's `json2.jsx`, both
 under their own permissive terms.

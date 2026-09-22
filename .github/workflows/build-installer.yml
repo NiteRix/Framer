@@ -1,0 +1,219 @@
+name: Build installers
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to cut a release at, e.g. v1.0.0. Leave empty to only build."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  check:
+    name: Syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run tests
+        # Geometry solver, webcam detection, panel wiring and a parse check
+        # over every script the extension ships. No dependencies.
+        run: npm test
+      - name: Check shell installers parse
+        run: |
+          bash -n Install-Mac.command
+          bash -n Uninstall-Mac.command
+
+  panel:
+    name: Panel smoke test
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Record the fixture capture
+        # A synthetic gameplay clip with the webcam box in a known position,
+        # which the smoke test checks detection against.
+        run: npm run fixture
+      - name: Drive the panel against a stubbed CEP host
+        run: npm run test:panel
+      - name: Layout screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Framer-panel-screenshots
+          path: test/panel/shot-*.png
+          if-no-files-found: warn
+
+  zip:
+    name: Portable zip
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage payload
+        run: |
+          VERSION="$(grep -oP 'ExtensionBundleVersion="\K[^"]+' extension/CSXS/manifest.xml)"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p "stage/Framer-$VERSION"
+          cp -R extension "stage/Framer-$VERSION/"
+          cp Install-Windows.bat Uninstall-Windows.bat \
+             Install-Mac.command Uninstall-Mac.command \
+             README.md LICENSE "stage/Framer-$VERSION/"
+          chmod +x "stage/Framer-$VERSION"/*.command
+      - name: Zip
+        run: |
+          mkdir -p dist
+          (cd stage && zip -qr "../dist/Framer-$VERSION-portable.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Framer-portable-zip
+          path: dist/*.zip
+
+  windows-setup:
+    name: Windows .exe
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version from manifest
+        shell: pwsh
+        run: |
+          $xml = [xml](Get-Content extension/CSXS/manifest.xml)
+          Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$($xml.ExtensionManifest.ExtensionBundleVersion)"
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # ${env:ProgramFiles(x86)} needs the braces around the whole name -
+          # "$env:ProgramFiles(x86)" expands the variable and leaves "(x86)"
+          # sitting there as literal text.
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+          if (-not $iscc) {
+            Write-Host "ISCC.exe not found. Looked in:"
+            $candidates | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "Using $iscc"
+
+          & $iscc "/DSourceRoot=$($PWD.Path)" "/DAppVersion=$env:VERSION" `
+                  "installer\windows\framer-setup.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $built = Get-ChildItem dist\*.exe -ErrorAction SilentlyContinue
+          if (-not $built) { Write-Error "ISCC reported success but produced no .exe"; exit 1 }
+          $built | ForEach-Object { Write-Host "Built $($_.Name) ($([math]::Round($_.Length / 1MB, 1)) MB)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Framer-windows-setup
+          path: dist/*.exe
+
+  release:
+    name: Attach to release
+    runs-on: ubuntu-latest
+    needs: [panel, zip, windows-setup]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Show what will be attached
+        run: find artifacts -type f -printf '%s\t%p\n' | sort -rn
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum Framer-portable-zip/*.zip Framer-windows-setup/*.exe \
+            | sed 's|[^ ]*/||' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Resolve tag
+        # On a tag push the ref is the tag; on a manual run it comes from the
+        # input, and action-gh-release creates the tag at this commit. Assets
+        # are named from the manifest version (1.0.0) while the tag carries a
+        # leading v, so the body needs the bare number to name files.
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          [ -n "$TAG" ] || TAG="$GITHUB_REF_NAME"
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "Refusing to release at '$TAG' - expected something like v1.0.0"; exit 1 ;;
+          esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Framer ${{ env.TAG }}
+          # Publishing a release with no installers attached would be worse
+          # than failing, because the download links would just be missing.
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/Framer-portable-zip/*.zip
+            artifacts/Framer-windows-setup/*.exe
+            artifacts/SHA256SUMS.txt
+          body: |
+            Reframes a horizontal Premiere clip to vertical with the webcam
+            region layered on top, and builds it as a real editable sequence.
+
+            ## Download
+
+            | You are on | Get |
+            |---|---|
+            | **Windows** | `Framer-${{ env.VERSION }}-Setup.exe` — run it, restart Premiere |
+            | **macOS** | `Framer-${{ env.VERSION }}-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
+
+            The portable zip also works on Windows if you would rather not run
+            an installer: unpack it and double-click `Install-Windows.bat`.
+
+            Both install into your own user folder, so there is no admin prompt.
+            Neither is signed with an Adobe certificate, so the installer also
+            switches on CEP's "allow unsigned extensions" setting — that is
+            what makes the panel load at all.
+
+            Then open it from **Window > Extensions > Framer**.
+
+            ## Notes
+
+            - Premiere Pro CC 2019 (13.0) or newer.
+            - **Set Default Media Scaling to "None"** in Preferences > Media.
+              On any other setting Premiere rescales the clips Framer places
+              and the layers will not match the preview.
+            - The webcam layer is rectangular: Premiere's scripting API cannot
+              create clip opacity masks, so rounded corners have to be added by
+              hand. Drop Shadow is applied, because that effect can be
+              scripted.
+            - Windows will warn that the installer is unsigned. That is
+              expected — [the troubleshooting guide explains
+              why](https://github.com/NiteRix/Framer/blob/${{ env.TAG }}/docs/TROUBLESHOOTING.md).
+            - Nothing leaves your machine, and the original sequence is never
+              modified — Framer only creates a new one.
+
+            Verify a download against `SHA256SUMS.txt` if you want to.
+
+            Full README: https://github.com/NiteRix/Framer/blob/${{ env.TAG }}/README.md
+            Trouble: https://github.com/NiteRix/Framer/blob/${{ env.TAG }}/docs/TROUBLESHOOTING.md

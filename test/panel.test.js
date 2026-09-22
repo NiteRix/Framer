@@ -11,10 +11,13 @@ var h = require('./harness');
 var test = h.test, assert = h.assert;
 
 var ROOT = path.join(__dirname, '..');
+var EXT = path.join(ROOT, 'extension');
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
+/** Paths inside the shipped extension payload. */
+function extPath(rel) { return path.join(EXT, rel); }
 
-var html = read('index.html');
-var ui = read('js/app/ui.js');
+var html = read('extension/index.html');
+var ui = read('extension/js/app/ui.js');
 
 function htmlIds() {
   var ids = {};
@@ -56,7 +59,7 @@ test('every script and stylesheet the panel loads exists', function () {
   var re = /(?:src|href)="([^"]+\.(?:js|css))"/g, m;
   var checked = 0;
   while ((m = re.exec(html))) {
-    var file = path.join(ROOT, m[1]);
+    var file = extPath(m[1]);
     assert.ok(fs.existsSync(file), 'referenced file is missing: ' + m[1]);
     checked++;
   }
@@ -64,31 +67,31 @@ test('every script and stylesheet the panel loads exists', function () {
 });
 
 test('the manifest points at files that exist', function () {
-  var manifest = read('CSXS/manifest.xml');
+  var manifest = read('extension/CSXS/manifest.xml');
   var main = manifest.match(/<MainPath>\.\/([^<]+)<\/MainPath>/);
   var script = manifest.match(/<ScriptPath>\.\/([^<]+)<\/ScriptPath>/);
-  assert.ok(main && fs.existsSync(path.join(ROOT, main[1])), 'MainPath exists');
-  assert.ok(script && fs.existsSync(path.join(ROOT, script[1])), 'ScriptPath exists');
+  assert.ok(main && fs.existsSync(extPath(main[1])), 'MainPath exists');
+  assert.ok(script && fs.existsSync(extPath(script[1])), 'ScriptPath exists');
 
   var icons = /<Icon Type="[^"]+">\.\/([^<]+)<\/Icon>/g, m;
   while ((m = icons.exec(manifest))) {
-    assert.ok(fs.existsSync(path.join(ROOT, m[1])), 'icon exists: ' + m[1]);
+    assert.ok(fs.existsSync(extPath(m[1])), 'icon exists: ' + m[1]);
   }
 });
 
 test('the manifest and package agree on the version', function () {
-  var manifest = read('CSXS/manifest.xml');
+  var manifest = read('extension/CSXS/manifest.xml');
   var pkg = JSON.parse(read('package.json'));
   var bundle = manifest.match(/ExtensionBundleVersion="([^"]+)"/);
   assert.ok(bundle, 'bundle version present');
   assert.equal(bundle[1], pkg.version, 'manifest matches package.json');
-  var jsxVersion = read('jsx/framer.jsx').match(/FRAMER_VERSION = '([^']+)'/);
+  var jsxVersion = read('extension/jsx/framer.jsx').match(/FRAMER_VERSION = '([^']+)'/);
   assert.ok(jsxVersion, 'host script declares a version');
   assert.equal(jsxVersion[1], pkg.version, 'host script matches package.json');
 });
 
 test('every layout has an option group and a hint', function () {
-  var L = require('../js/core/layout.js');
+  var L = require('../extension/js/core/layout.js');
   var ids = L.layoutIds();
   for (var i = 0; i < ids.length; i++) {
     assert.ok(ui.indexOf(ids[i] + ':') >= 0, 'OPTION_CONTROLS covers ' + ids[i]);
@@ -98,7 +101,7 @@ test('every layout has an option group and a hint', function () {
 });
 
 test('every option control maps to a real layout default', function () {
-  var L = require('../js/core/layout.js');
+  var L = require('../extension/js/core/layout.js');
   var block = ui.match(/var OPTION_CONTROLS = \{([\s\S]*?)\n  \};/);
   assert.ok(block, 'found OPTION_CONTROLS');
 
@@ -116,8 +119,8 @@ test('every option control maps to a real layout default', function () {
 });
 
 test('the host script exposes every entry point the bridge calls', function () {
-  var jsx = read('jsx/framer.jsx');
-  var bridge = read('js/app/host.js');
+  var jsx = read('extension/jsx/framer.jsx');
+  var bridge = read('extension/js/app/host.js');
   var re = /'(framer[A-Za-z]+)'/g, m;
   var called = {};
   while ((m = re.exec(bridge))) { called[m[1]] = true; }
@@ -130,7 +133,7 @@ test('the host script exposes every entry point the bridge calls', function () {
 });
 
 test('the host script stays within ExtendScript ES3 syntax', function () {
-  var jsx = read('jsx/framer.jsx');
+  var jsx = read('extension/jsx/framer.jsx');
   // Strip comments and strings before looking for modern syntax.
   var code = jsx
     .replace(/\/\*[\s\S]*?\*\//g, '')

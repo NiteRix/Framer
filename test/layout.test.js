@@ -6,7 +6,7 @@
 
 var h = require('./harness');
 var test = h.test, assert = h.assert;
-var L = require('../js/core/layout.js');
+var L = require('../extension/js/core/layout.js');
 
 /**
  * Reproduce Premiere's clip transform pipeline:

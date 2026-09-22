@@ -7,7 +7,7 @@
 
 var h = require('./harness');
 var test = h.test, assert = h.assert;
-var D = require('../js/core/detect.js');
+var D = require('../extension/js/core/detect.js');
 
 function makeFrame(width, height, painter) {
   var data = new Uint8ClampedArray(width * height * 4);

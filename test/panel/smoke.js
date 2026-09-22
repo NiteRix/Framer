@@ -14,7 +14,11 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 
-const REPO = path.join(__dirname, '..', '..');
+// FRAMER_EXT lets this run against a staged or installed payload, not just the
+// repo checkout - which is how a shipped build gets verified end to end.
+const EXT = process.env.FRAMER_EXT
+  ? path.resolve(process.env.FRAMER_EXT)
+  : path.join(__dirname, '..', '..', 'extension');
 const VIDEO = path.join(__dirname, 'capture.webm');
 
 if (!fs.existsSync(VIDEO)) {
@@ -118,13 +122,14 @@ function check(label, ok, detail) {
         }
       }
     };
-  }, { video: VIDEO, extPath: REPO });
+  }, { video: VIDEO, extPath: EXT });
 
   const consoleErrors = [];
   page.on('console', m => { if (m.type() === 'error') { consoleErrors.push(m.text()); } });
   page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
 
-  await page.goto('file://' + path.join(REPO, 'index.html'));
+  console.log('  payload: ' + EXT);
+  await page.goto('file://' + path.join(EXT, 'index.html'));
   await page.waitForFunction(() => document.getElementById('log').textContent.includes('host script ready'),
                              null, { timeout: 15000 });
   console.log('\nPanel smoke test\n');
