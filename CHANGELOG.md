@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.1.0
+
+Fixes from using 1.0.1 on real footage: layers were cropped with no way back,
+the audio came in once per layer, and the gameplay was hard to centre.
+
+### Layers keep their full frame
+
+1.0 cropped every layer tight to its region. That looked right, but if you
+deleted the webcam for a few seconds the gameplay was cut off at its band,
+with nothing behind the black to reframe.
+
+Now a layer is only cropped on the sides where the rest of its frame would
+actually show over another layer. In the split template the gameplay layer is
+not cropped at all, and the webcam is only cut off along the edge where the
+gameplay starts; everything else runs off the canvas or sits under the layer
+above. The sequence looks identical - a new test samples every template, both
+crop modes and several webcam positions point by point and requires the same
+source pixel on top everywhere - but each clip keeps its whole picture. The
+old behaviour is one checkbox away (**Keep the full frame on each layer**).
+
+### Focus moments
+
+A new **Focus moments** card. Cut a moment out of the vertical sequence (Add
+Edit to All Tracks at each end), click the piece, and press **Gameplay only**
+or **Webcam only**: that layer is re-framed to fill the canvas with no crop and
+the other is switched off, for that piece only. **Back to layout** restores the
+values it was built with. The panel remembers the layout of each sequence it
+built, so this works on any of them, not just the last.
+
+### The audio is in once
+
+Every layer was placed with the source clip itself, and Premiere brings a
+clip's audio along wherever it goes - three layers, three copies of the audio.
+Layers are now video-only subclips (in a **Framer** bin) and the audio goes on
+A1 once, from an audio-only subclip. On a Premiere that cannot make subclips,
+the clip is placed as before and the extra audio copies are unlinked and
+removed. The trim is carried by the subclips, so the source clip's in and out
+points are no longer touched. Clips are overwritten onto the empty tracks
+rather than inserted, so nothing can ripple.
+
+### Framing the gameplay
+
+- **Fit gameplay** frames the gameplay as close to the middle of the frame as
+  it can go without taking in the webcam - moving only as far as it must,
+  going above or below the webcam when that keeps it more central, and keeping
+  a small clearance from the overlay border. It used to push the crop flush
+  against the far side of the webcam, off centre. It also tested for overlap
+  with a duplicate-detection helper that only fired above 60% overlap, so it
+  could leave the gameplay over the webcam.
+- **Centre the box** buttons centre the selected box across or up and down.
+- Boxes snap to the centre lines while dragged, with a guide shown.
+- The box drawn is now the box used. Where a template fixes a layer's shape,
+  the region was silently refitted at build time, so the gameplay box could
+  show the whole frame while the plan used a narrow slice of it. The picker now
+  shows the fitted box, resizing holds the shape exactly and stays inside the
+  frame, and the original box is kept so switching templates starts from it.
+- Detecting the webcam frames the gameplay clear of it, if you have not placed
+  the gameplay yourself.
+
+### Smaller fixes
+
+- The preview draws each layer with its actual crop, so it shows exactly what
+  the full-frame layers do.
+- Calibrate added Crop to the first clip on the track instead of the selected
+  one.
+- The layer summary says what each layer is cropped along.
+- `npm run icons` pointed at a folder that does not exist.
+
+### Testing
+
+`test/fake-timeline.js` is a fake Premiere timeline - linked audio, subclips,
+QE effects, cutting - so `framerBuild` and `framerFocus` run under Node. Run
+against 1.0.1's host script it reproduces the triple audio. The browser test
+now also drives Fit, Centre, an aspect-locked corner drag, both crop modes and
+a Focus round trip. 83 tests, up from 65.
+
 ## 1.0.1
 
 Fixes the panel never showing a reference frame, and the clip size coming up

@@ -143,8 +143,44 @@ test('suggestGameplayRegion avoids the webcam box', function () {
   assert.ok(rect.w > 0.2 && rect.h > 0.2, 'suggestion is usable in size');
 });
 
-test('suggestGameplayRegion falls back to the full frame with no webcam', function () {
-  var rect = D.suggestGameplayRegion(null, 9 / 16, { width: 1920, height: 1080 });
-  assert.equal(rect.w, 1, 'full width');
-  assert.equal(rect.h, 1, 'full height');
+test('suggestGameplayRegion centres the largest crop when there is no webcam', function () {
+  var source = { width: 1920, height: 1080 };
+  var rect = D.suggestGameplayRegion(null, 9 / 16, source);
+  assert.close(rect.h, 1, 1e-9, 'full height');
+  assert.close(rect.w * 1920 / (rect.h * 1080), 9 / 16, 1e-6, 'the requested aspect');
+  assert.close(rect.x + rect.w / 2, 0.5, 1e-9, 'centred across');
+
+  var wide = D.suggestGameplayRegion(null, 16 / 9, source);
+  assert.close(wide.w, 1, 1e-9, 'a 16:9 band takes the whole 16:9 frame');
+  assert.close(wide.h, 1, 1e-9, 'all of it');
+});
+
+test('suggestGameplayRegion stays centred when the webcam is out of the way', function () {
+  var source = { width: 1920, height: 1080 };
+  var rect = D.suggestGameplayRegion({ x: 0.02, y: 0.03, w: 0.28, h: 0.28 }, 9 / 16, source);
+  assert.close(rect.x + rect.w / 2, 0.5, 1e-9, 'a 9:16 crop clears a corner webcam without moving');
+});
+
+test('suggestGameplayRegion moves only as far as it must to clear the webcam', function () {
+  var source = { width: 1920, height: 1080 };
+  var cam = { x: 0.02, y: 0.03, w: 0.28, h: 0.28 };
+  var band = 1080 / 1267;                       // the split template's gameplay band
+  var rect = D.suggestGameplayRegion(cam, band, source);
+  assert.ok(!D._internals.intersects(rect, cam), 'clear of the webcam');
+  assert.close(rect.x, cam.x + cam.w + 0.02, 1e-9, 'pushed just past the webcam edge, plus clearance');
+  assert.close(rect.h, 1, 1e-9, 'keeps the full height');
+  assert.close(rect.w * 1920 / (rect.h * 1080), band, 1e-6, 'keeps the band aspect');
+
+  var mirrored = D.suggestGameplayRegion({ x: 0.70, y: 0.62, w: 0.28, h: 0.36 }, band, source);
+  assert.ok(!D._internals.intersects(mirrored, { x: 0.70, y: 0.62, w: 0.28, h: 0.36 }), 'clear on the other side');
+  assert.close(mirrored.x + mirrored.w, 0.68, 1e-9, 'pushed just short of a right-hand webcam, plus clearance');
+});
+
+test('suggestGameplayRegion goes below a webcam that spans the top middle', function () {
+  var source = { width: 1920, height: 1080 };
+  var cam = { x: 0.4, y: 0, w: 0.2, h: 0.25 };
+  var rect = D.suggestGameplayRegion(cam, 1080 / 1267, source);
+  assert.ok(!D._internals.intersects(rect, cam), 'clear of the webcam');
+  assert.close(rect.x + rect.w / 2, 0.5, 1e-9, 'still centred across');
+  assert.ok(rect.y >= cam.y + cam.h + 0.02 - 1e-9, 'below the webcam, with clearance');
 });

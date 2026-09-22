@@ -13,6 +13,8 @@
   root.Framer = root.Framer || {};
 
   var HANDLE = 7;           // hit radius for corner/edge handles, in CSS px
+  var SNAP = 8;             // centre snap distance while moving, in canvas px
+  var MIN_SIZE = 0.03;      // smallest region side, as a fraction of the frame
   var COLORS = {
     gameplay: '#4aa8ff',
     webcam: '#ffb347',
@@ -34,6 +36,7 @@
     var locks = {};                         // role -> aspect (pixel) or null
     var source = { width: 16, height: 9 };
     var drag = null;
+    var guides = { x: false, y: false };  // centre lines shown while snapped
 
     function layout() {
       // Fit the source frame into the canvas, letterboxing as needed.
@@ -81,30 +84,64 @@
       return null;
     }
 
-    function applyAspect(rect, role, anchorKey) {
-      var aspect = locks[role];
-      if (!aspect) { return rect; }
-      // aspect is a pixel ratio; convert to the normalised ratio of this frame.
-      var normAspect = aspect * source.height / source.width;
-      var w = rect.w, h = rect.h;
-      if (anchorKey === 'n' || anchorKey === 's') { w = h * normAspect; }
-      else { h = w / normAspect; }
+    /**
+     * Resize from one handle. The opposite edge (or, for a side handle, the
+     * centre line across it) stays put, the box never leaves the frame, and a
+     * locked aspect is held exactly - so the box drawn is the box used.
+     */
+    function resize(o, k, dx, dy, role) {
+      var hasW = k.indexOf('w') >= 0, hasE = k.indexOf('e') >= 0;
+      var hasN = k.indexOf('n') >= 0, hasS = k.indexOf('s') >= 0;
+      var horizontal = hasW || hasE, vertical = hasN || hasS;
 
-      var out = { x: rect.x, y: rect.y, w: w, h: h };
-      // Grow/shrink away from the edge being dragged.
-      if (anchorKey && anchorKey.indexOf('n') >= 0) { out.y = rect.y + rect.h - h; }
-      if (anchorKey && anchorKey.indexOf('w') >= 0) { out.x = rect.x + rect.w - w; }
-      if (anchorKey === 'move' || !anchorKey) {
-        out.x = rect.x + (rect.w - w) / 2;
-        out.y = rect.y + (rect.h - h) / 2;
+      // Fixed point, and how much room there is to grow away from it.
+      var ax = hasW ? o.x + o.w : (hasE ? o.x : o.x + o.w / 2);
+      var ay = hasN ? o.y + o.h : (hasS ? o.y : o.y + o.h / 2);
+      var roomX = hasW ? ax : (hasE ? 1 - ax : 2 * Math.min(ax, 1 - ax));
+      var roomY = hasN ? ay : (hasS ? 1 - ay : 2 * Math.min(ay, 1 - ay));
+
+      var w = horizontal ? o.w + (hasW ? -dx : dx) : o.w;
+      var h = vertical ? o.h + (hasN ? -dy : dy) : o.h;
+
+      var aspect = locks[role];
+      if (aspect) {
+        var na = aspect * source.height / source.width;      // normalised w / h
+        if (horizontal && vertical) { w = Math.max(w, h * na); h = w / na; }
+        else if (horizontal) { h = w / na; }
+        else { w = h * na; }
+        var minSide = Math.max(MIN_SIZE, MIN_SIZE * na);
+        if (w < minSide) { w = minSide; h = w / na; }
+        if (h < MIN_SIZE) { h = MIN_SIZE; w = h * na; }
+        var f = Math.min(1, roomX / w, roomY / h);
+        w *= f; h *= f;
+      } else {
+        w = clamp(w, MIN_SIZE, Math.max(MIN_SIZE, roomX));
+        h = clamp(h, MIN_SIZE, Math.max(MIN_SIZE, roomY));
       }
-      return out;
+
+      return {
+        x: hasW ? ax - w : (hasE ? ax : ax - w / 2),
+        y: hasN ? ay - h : (hasS ? ay : ay - h / 2),
+        w: w, h: h
+      };
+    }
+
+    /** Hold a moved box inside the frame, snapping its centre to the frame's. */
+    function move(o, dx, dy, box) {
+      var next = { x: o.x + dx, y: o.y + dy, w: o.w, h: o.h };
+      var snapX = SNAP / box.w, snapY = SNAP / box.h;
+      guides = { x: false, y: false };
+      if (Math.abs(next.x + next.w / 2 - 0.5) < snapX) { next.x = 0.5 - next.w / 2; guides.x = true; }
+      if (Math.abs(next.y + next.h / 2 - 0.5) < snapY) { next.y = 0.5 - next.h / 2; guides.y = true; }
+      next.x = clamp(next.x, 0, 1 - next.w);
+      next.y = clamp(next.y, 0, 1 - next.h);
+      return next;
     }
 
     function normalise(rect) {
       var out = {
         x: clamp(rect.x, 0, 1), y: clamp(rect.y, 0, 1),
-        w: clamp(rect.w, 0.03, 1), h: clamp(rect.h, 0.03, 1)
+        w: clamp(rect.w, MIN_SIZE, 1), h: clamp(rect.h, MIN_SIZE, 1)
       };
       if (out.x + out.w > 1) { out.x = Math.max(0, 1 - out.w); }
       if (out.y + out.h > 1) { out.y = Math.max(0, 1 - out.h); }
@@ -121,7 +158,8 @@
       var handle = hitHandle(pos, rect);
       if (!handle) { return; }
       evt.preventDefault();
-      drag = { handle: handle, start: pos, origin: regions[active], box: box };
+      var o = regions[active];
+      drag = { handle: handle, start: pos, origin: { x: o.x, y: o.y, w: o.w, h: o.h }, box: box };
       canvas.setPointerCapture && canvas.setPointerCapture(evt.pointerId);
     }
 
@@ -134,31 +172,19 @@
         var hover = hitHandle(pos, toCanvas(regions[active], box));
         canvas.style.cursor = hover === 'move' ? 'move'
           : (hover ? (hover === 'n' || hover === 's' ? 'ns-resize'
-            : (hover === 'e' || hover === 'w' ? 'ew-resize' : 'nwse-resize')) : 'default');
+            : (hover === 'e' || hover === 'w' ? 'ew-resize'
+              : (hover === 'ne' || hover === 'sw' ? 'nesw-resize' : 'nwse-resize'))) : 'default');
         return;
       }
 
       evt.preventDefault();
       var dx = (pos.x - drag.start.x) / box.w;
       var dy = (pos.y - drag.start.y) / box.h;
-      var o = drag.origin;
-      var next = { x: o.x, y: o.y, w: o.w, h: o.h };
-      var k = drag.handle;
+      var next = drag.handle === 'move'
+        ? move(drag.origin, dx, dy, box)
+        : resize(drag.origin, drag.handle, dx, dy, active);
 
-      if (k === 'move') {
-        next.x = o.x + dx;
-        next.y = o.y + dy;
-      } else {
-        if (k.indexOf('w') >= 0) { next.x = o.x + dx; next.w = o.w - dx; }
-        if (k.indexOf('e') >= 0) { next.w = o.w + dx; }
-        if (k.indexOf('n') >= 0) { next.y = o.y + dy; next.h = o.h - dy; }
-        if (k.indexOf('s') >= 0) { next.h = o.h + dy; }
-        if (next.w < 0.03) { next.w = 0.03; }
-        if (next.h < 0.03) { next.h = 0.03; }
-        next = applyAspect(next, active, k);
-      }
-
-      regions[active] = normalise(next);
+      regions[active] = next;
       draw();
       if (opts.onChange) { opts.onChange(active, regions[active]); }
     }
@@ -166,6 +192,8 @@
     function onUp(evt) {
       if (!drag) { return; }
       drag = null;
+      guides = { x: false, y: false };
+      draw();
       canvas.releasePointerCapture && evt.pointerId !== undefined &&
         canvas.releasePointerCapture(evt.pointerId);
       if (opts.onCommit) { opts.onCommit(regions); }
@@ -233,6 +261,21 @@
       var other = active === 'webcam' ? 'gameplay' : 'webcam';
       if (opts.showBoth !== false) { drawRegion(other, box, false); }
       drawRegion(active, box, true);
+      drawGuides(box);
+    }
+
+    /** Centre lines while a moved box is snapped to them. */
+    function drawGuides(box) {
+      if (!guides.x && !guides.y) { return; }
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      if (guides.x) { ctx.moveTo(box.x + box.w / 2 + 0.5, box.y); ctx.lineTo(box.x + box.w / 2 + 0.5, box.y + box.h); }
+      if (guides.y) { ctx.moveTo(box.x, box.y + box.h / 2 + 0.5); ctx.lineTo(box.x + box.w, box.y + box.h / 2 + 0.5); }
+      ctx.stroke();
+      ctx.restore();
     }
 
     canvas.addEventListener('pointerdown', onDown);
@@ -255,6 +298,7 @@
         if (next.webcam) { regions.webcam = normalise(next.webcam); }
         draw();
       },
+      isDragging: function () { return !!drag; },
       getRegions: function () {
         return { gameplay: regions.gameplay, webcam: regions.webcam };
       },
@@ -272,7 +316,8 @@
 
   /**
    * Draw the plan onto a 9:16 canvas. Layers are painted bottom-up, exactly
-   * the track order the host script builds.
+   * the track order the host script builds, each with its crop applied and
+   * the rest of its frame running on under the layers above.
    *
    * Regions are normalised, so they are mapped against the reference image's
    * own pixel size rather than the source media's: the reference frame is
@@ -312,16 +357,16 @@
     ctx.rect(offX, offY, out.width * scale, out.height * scale);
     ctx.clip();
 
+    var L = root.Framer.layout;
     for (var i = 0; i < plan.layers.length; i++) {
       var layer = plan.layers[i];
-      var rect = layer.rect || { x: 0, y: 0, w: 1, h: 1 };
+      // What survives the layer's crop, drawn where the solver places it. With
+      // the minimal crop that is more than the region, exactly as in Premiere.
+      var keep = L.cropToRect(layer.crop);
+      var sx = keep.x * srcW, sy = keep.y * srcH;
+      var sw = keep.w * srcW, sh = keep.h * srcH;
 
-      var sx = rect.x * srcW, sy = rect.y * srcH;
-      var sw = rect.w * srcW, sh = rect.h * srcH;
-
-      // `visible` is where the solver says the region lands, so drawing it
-      // there means the preview reflects the real crop/scale/position maths.
-      var v = layer.visible || layer.target;
+      var v = L.placeSourceRect(layer, keep);
       var dx = offX + v.x * scale, dy = offY + v.y * scale;
       var dw = v.w * scale, dh = v.h * scale;
 

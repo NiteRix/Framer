@@ -11,15 +11,22 @@ var L = require('../extension/js/core/layout.js');
 /**
  * Reproduce Premiere's clip transform pipeline:
  *   crop -> scale about the frame centre -> place the frame centre at Position
- * and return where the surviving region lands, in sequence pixels.
+ * and return where a normalised source rectangle lands, in sequence pixels.
+ * By default that rectangle is the layer's region (what must land on its
+ * target); `useCrop` measures what survives the crop instead.
  */
-function simulate(layer, source, output) {
+function simulate(layer, source, output, useCrop) {
   var W = source.width, H = source.height;
   var SW = output.width, SH = output.height;
-  var c = layer.crop || { left: 0, top: 0, right: 0, bottom: 0 };
-
-  var u0 = c.left / 100, u1 = 1 - c.right / 100;
-  var v0 = c.top / 100, v1 = 1 - c.bottom / 100;
+  var u0, u1, v0, v1;
+  if (layer.rect && !useCrop) {
+    u0 = layer.rect.x; u1 = layer.rect.x + layer.rect.w;
+    v0 = layer.rect.y; v1 = layer.rect.y + layer.rect.h;
+  } else {
+    var c = layer.crop || { left: 0, top: 0, right: 0, bottom: 0 };
+    u0 = c.left / 100; u1 = 1 - c.right / 100;
+    v0 = c.top / 100; v1 = 1 - c.bottom / 100;
+  }
 
   var regionW = (u1 - u0) * W;
   var regionH = (v1 - v0) * H;
@@ -239,6 +246,125 @@ test('a 9:16 source still solves cleanly', function () {
     var got = simulate(plan.layers[i], source, output);
     assert.close(got.w, plan.layers[i].target.w, 1, 'layer ' + i + ' width');
     assert.close(got.h, plan.layers[i].target.h, 1, 'layer ' + i + ' height');
+  }
+});
+
+/**
+ * What the finished sequence shows at a point: the topmost layer whose cropped
+ * frame covers it, and which source pixel that layer puts there. This is the
+ * whole Premiere composite, one point at a time.
+ */
+function sample(plan, source, output, px, py) {
+  for (var i = plan.layers.length - 1; i >= 0; i--) {
+    var layer = plan.layers[i];
+    var box = simulate(layer, source, output, true);
+    if (px < box.x || px >= box.x + box.w || py < box.y || py >= box.y + box.h) { continue; }
+    var s = layer.scale / 100;
+    return {
+      layer: i,
+      u: (px - layer.position[0] * output.width) / s + source.width / 2,
+      v: (py - layer.position[1] * output.height) / s + source.height / 2
+    };
+  }
+  return null;
+}
+
+test('keeping the full frame looks exactly like cropping every layer to its region', function () {
+  var ids = L.layoutIds();
+  var outputs = [{ width: 1080, height: 1920 }, { width: 1080, height: 1350 }];
+  var optionSets = {
+    split: [{}, { gap: 60 }, { webcamFirst: false }, { gap: 40, webcamFirst: false }],
+    overlay: [{}, { anchor: 'bottom-right' }, { anchor: 'middle-center', webcamWidth: 0.8 }],
+    blur: [{}, { gameplayWidth: 0.7 }],
+    full: [{}]
+  };
+  var gameplays = [{ x: 0, y: 0, w: 1, h: 1 }, { x: 0.3, y: 0.1, w: 0.45, h: 0.8 }];
+
+  for (var o = 0; o < outputs.length; o++) {
+    for (var i = 0; i < ids.length; i++) {
+      var sets = optionSets[ids[i]];
+      for (var k = 0; k < sets.length; k++) {
+        for (var c = 0; c < WEBCAMS.length; c++) {
+          for (var g = 0; g < gameplays.length; g++) {
+            var spec = {
+              source: SOURCES[0], output: outputs[o], layout: ids[i], options: sets[k],
+              regions: { gameplay: gameplays[g], webcam: WEBCAMS[c] }
+            };
+            var tight = L.buildPlan(Object.assign({ cropMode: 'tight' }, spec));
+            var full = L.buildPlan(spec);
+            var label = ids[i] + ' ' + JSON.stringify(sets[k]) + ' cam=' + c + ' play=' + g + ' out=' + outputs[o].height;
+
+            // A grid over the canvas, off the pixel edges where rounding lives.
+            for (var gy = 0; gy < 48; gy++) {
+              for (var gx = 0; gx < 27; gx++) {
+                var px = (gx + 0.37) * outputs[o].width / 27;
+                var py = (gy + 0.41) * outputs[o].height / 48;
+                var a = sample(tight, SOURCES[0], outputs[o], px, py);
+                var b = sample(full, SOURCES[0], outputs[o], px, py);
+                if (!a) { assert.ok(!b, label + ': full-frame layer shows over black at ' + px + ',' + py); continue; }
+                assert.ok(b, label + ': point went black at ' + px + ',' + py);
+                assert.equal(b.layer, a.layer, label + ': different layer on top at ' + px.toFixed(0) + ',' + py.toFixed(0));
+                assert.close(b.u, a.u, 0.5, label + ': source x');
+                assert.close(b.v, a.v, 0.5, label + ': source y');
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+test('the full-frame mode crops only what would show over another layer', function () {
+  var regions = { gameplay: { x: 0, y: 0, w: 1, h: 1 }, webcam: { x: 0.02, y: 0.03, w: 0.28, h: 0.3 } };
+  function crops(layout, options) {
+    var plan = L.buildPlan({ source: SOURCES[0], layout: layout, options: options, regions: regions });
+    var out = {};
+    plan.layers.forEach(function (l) { out[l.role] = l.crop; });
+    return out;
+  }
+
+  var split = crops('split', {});
+  assert.equal(split.gameplay, null, 'split: the gameplay layer keeps its whole frame');
+  assert.ok(split.webcam && split.webcam.bottom > 0, 'split: the webcam is cut off where the gameplay starts');
+  assert.ok(!split.webcam.left && !split.webcam.right && !split.webcam.top,
+            'split: nothing else of the webcam frame is cropped - it runs off the canvas');
+
+  var below = crops('split', { webcamFirst: false });
+  assert.ok(below.webcam.top > 0 && !below.webcam.bottom, 'split, webcam below: cropped along its top instead');
+
+  var overlay = crops('overlay', {});
+  assert.equal(overlay.gameplay, null, 'overlay: the gameplay layer keeps its whole frame');
+  assert.ok(overlay.webcam.left > 0 && overlay.webcam.top > 0 && overlay.webcam.right > 0 && overlay.webcam.bottom > 0,
+            'overlay: a floating webcam box is cropped on every side');
+
+  assert.equal(crops('full', {}).gameplay, null, 'full: nothing is cropped');
+});
+
+test('focusTransform fills the canvas with one layer and crops nothing', function () {
+  var output = { width: 1080, height: 1920 };
+  for (var s = 0; s < SOURCES.length; s++) {
+    for (var c = 0; c < WEBCAMS.length; c++) {
+      var spec = { source: SOURCES[s], output: output,
+                   regions: { gameplay: { x: 0.3, y: 0, w: 0.48, h: 1 }, webcam: WEBCAMS[c] } };
+      ['gameplay', 'webcam'].forEach(function (role) {
+        var t = L.focusTransform(spec, role);
+        var label = role + ' src=' + SOURCES[s].width + ' cam=' + c;
+        assert.equal(t.crop, null, label + ' has no crop');
+        var got = simulate({ rect: t.rect, scale: t.scale, position: t.position }, SOURCES[s], output);
+        assert.close(got.x, 0, 1, label + ' x');
+        assert.close(got.y, 0, 1, label + ' y');
+        assert.close(got.w, output.width, 1, label + ' fills the width');
+        assert.close(got.h, output.height, 1, label + ' fills the height');
+        // Inside the source frame, so the canvas never shows past its edge.
+        assert.ok(t.rect.x >= -1e-9 && t.rect.y >= -1e-9, label + ' region starts inside the frame');
+        assert.ok(t.rect.x + t.rect.w <= 1 + 1e-9 && t.rect.y + t.rect.h <= 1 + 1e-9, label + ' region ends inside');
+      });
+      var cam = WEBCAMS[c];
+      var camFocus = L.focusTransform(spec, 'webcam').rect;
+      assert.ok(camFocus.x >= cam.x - 1e-9 && camFocus.x + camFocus.w <= cam.x + cam.w + 1e-9,
+                'webcam focus stays inside the webcam box, cam=' + c);
+    }
   }
 });
 

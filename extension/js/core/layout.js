@@ -131,6 +131,13 @@
     var isFullFrame = rect.x <= 0 && rect.y <= 0 && rect.w >= 1 && rect.h >= 1;
 
     return {
+      /** Where the whole, uncropped source frame lands, in sequence pixels. */
+      frame: {
+        x: round(posX * SW - scale * W / 2, 2),
+        y: round(posY * SH - scale * H / 2, 2),
+        w: round(scale * W, 2),
+        h: round(scale * H, 2)
+      },
       crop: isFullFrame ? null : {
         left: round(rect.x * 100),
         top: round(rect.y * 100),
@@ -320,6 +327,9 @@
    * spec.layout   layout id
    * spec.options  layout options (missing keys fall back to defaults)
    * spec.regions  { gameplay:{x,y,w,h}, webcam:{x,y,w,h} } normalised
+   * spec.cropMode 'minimal' (default) crops a layer only on the sides where
+   *               the rest of its frame would show over something else;
+   *               'tight' crops every layer to exactly its region
    */
   function buildPlan(spec) {
     var layout = LAYOUTS[spec.layout];
@@ -371,9 +381,17 @@
         scale: solved.scale,
         position: solved.position,
         visible: solved.visible,
+        frame: solved.frame,
         blur: ls.blur || 0,
         shadow: !!ls.shadow
       });
+    }
+
+    var cropMode = spec.cropMode === 'tight' ? 'tight' : 'minimal';
+    if (cropMode === 'minimal') {
+      for (var j = 0; j < layers.length; j++) {
+        if (layers[j].rect) { layers[j].crop = minimalCrop(layers, j, out); }
+      }
     }
 
     return {
@@ -381,7 +399,132 @@
       output: { width: out.width, height: out.height },
       source: { width: source.width, height: source.height },
       options: options,
+      cropMode: cropMode,
       layers: layers
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Minimal crop                                                       *
+   * ------------------------------------------------------------------ *
+   * A layer only has to be cropped where the rest of its frame would be
+   * seen: inside the canvas, outside its own band, and not hidden under a
+   * layer above it. Everything else is left on the clip, so deleting the
+   * layer on top for a few seconds shows more of this one instead of black,
+   * and the clip can be rescaled there without first undoing a crop.
+   */
+
+  var EPS = 0.75;   // sequence pixels; below this a sliver is rounding noise
+
+  function intersect(a, b) {
+    var x0 = Math.max(a.x, b.x), y0 = Math.max(a.y, b.y);
+    var x1 = Math.min(a.x + a.w, b.x + b.w), y1 = Math.min(a.y + a.h, b.y + b.h);
+    if (x1 - x0 <= EPS || y1 - y0 <= EPS) { return null; }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  /** a minus b, as up to four rectangles. */
+  function subtract(a, b) {
+    var hit = intersect(a, b);
+    if (!hit) { return [a]; }
+    var out = [];
+    var ax1 = a.x + a.w, ay1 = a.y + a.h, hx1 = hit.x + hit.w, hy1 = hit.y + hit.h;
+    if (hit.y - a.y > EPS) { out.push({ x: a.x, y: a.y, w: a.w, h: hit.y - a.y }); }
+    if (ay1 - hy1 > EPS) { out.push({ x: a.x, y: hy1, w: a.w, h: ay1 - hy1 }); }
+    if (hit.x - a.x > EPS) { out.push({ x: a.x, y: hit.y, w: hit.x - a.x, h: hit.h }); }
+    if (ax1 - hx1 > EPS) { out.push({ x: hx1, y: hit.y, w: ax1 - hx1, h: hit.h }); }
+    return out;
+  }
+
+  /** The parts of `rect` not covered by any of `covers`. */
+  function uncovered(rect, covers) {
+    var pieces = [rect];
+    for (var c = 0; c < covers.length && pieces.length; c++) {
+      var next = [];
+      for (var p = 0; p < pieces.length; p++) { next = next.concat(subtract(pieces[p], covers[c])); }
+      pieces = next;
+    }
+    return pieces;
+  }
+
+  function minimalCrop(layers, index, out) {
+    var layer = layers[index];
+    var canvas = { x: 0, y: 0, w: out.width, h: out.height };
+    var shown = intersect(layer.frame, canvas);
+    if (!shown) { return null; }
+
+    // The layer's own band, and whatever the layers above it always cover.
+    var covers = [layer.visible];
+    for (var k = index + 1; k < layers.length; k++) { covers.push(layers[k].visible); }
+    var spill = uncovered(shown, covers);
+    if (!spill.length) { return null; }
+
+    var v = layer.visible;
+    var sides = {
+      left:   { x: shown.x, y: shown.y, w: v.x - shown.x, h: shown.h },
+      right:  { x: v.x + v.w, y: shown.y, w: shown.x + shown.w - (v.x + v.w), h: shown.h },
+      top:    { x: shown.x, y: shown.y, w: shown.w, h: v.y - shown.y },
+      bottom: { x: shown.x, y: v.y + v.h, w: shown.w, h: shown.y + shown.h - (v.y + v.h) }
+    };
+    var need = {};
+    for (var side in sides) {
+      if (!sides.hasOwnProperty(side)) { continue; }
+      need[side] = false;
+      if (sides[side].w <= EPS || sides[side].h <= EPS) { continue; }
+      for (var s = 0; s < spill.length; s++) {
+        if (intersect(spill[s], sides[side])) { need[side] = true; break; }
+      }
+    }
+
+    var tight = layer.crop || { left: 0, top: 0, right: 0, bottom: 0 };
+    var crop = {
+      left: need.left ? tight.left : 0,
+      top: need.top ? tight.top : 0,
+      right: need.right ? tight.right : 0,
+      bottom: need.bottom ? tight.bottom : 0
+    };
+    if (!crop.left && !crop.top && !crop.right && !crop.bottom) { return null; }
+    return crop;
+  }
+
+  /**
+   * Motion values that make one layer fill the whole canvas on its own - what
+   * a "gameplay only" or "webcam only" moment uses. The gameplay keeps as
+   * much of its region as the canvas shape allows; the webcam is cut in to
+   * the middle of its box, which is what a reaction shot wants. Nothing is
+   * cropped: the frame fills the canvas and the rest falls outside it.
+   */
+  function focusTransform(spec, role) {
+    var out = spec.output || DEFAULT_OUTPUT;
+    var source = spec.source;
+    if (!source || !source.width || !source.height) {
+      throw new Error('Source dimensions are required');
+    }
+    var regions = spec.regions || defaultRegions(source);
+    var region = regions[role] || defaultRegions(source)[role];
+    var rect = fitRectToAspect(region, out.width / out.height, source.width, source.height,
+                               role === 'webcam' ? 'shrink' : 'expand');
+    var solved = solveLayer({
+      source: source, output: out, rect: rect,
+      target: { x: 0, y: 0, w: out.width, h: out.height }, fit: 'exact'
+    });
+    return { role: role, rect: rect, crop: null, scale: solved.scale, position: solved.position };
+  }
+
+  /** Map a normalised source rectangle through a layer's placement, in sequence pixels. */
+  function placeSourceRect(layer, src) {
+    var f = layer.frame;
+    return { x: f.x + src.x * f.w, y: f.y + src.y * f.h, w: src.w * f.w, h: src.h * f.h };
+  }
+
+  /** The part of the source frame a crop leaves, normalised. */
+  function cropToRect(crop) {
+    if (!crop) { return { x: 0, y: 0, w: 1, h: 1 }; }
+    return {
+      x: crop.left / 100,
+      y: crop.top / 100,
+      w: 1 - (crop.left + crop.right) / 100,
+      h: 1 - (crop.top + crop.bottom) / 100
     };
   }
 
@@ -395,6 +538,9 @@
     fitRectToAspect: fitRectToAspect,
     solveLayer: solveLayer,
     buildPlan: buildPlan,
+    focusTransform: focusTransform,
+    placeSourceRect: placeSourceRect,
+    cropToRect: cropToRect,
     clamp: clamp
   };
 }));

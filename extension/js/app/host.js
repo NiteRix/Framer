@@ -91,6 +91,7 @@
     inspect: function () { return withHost('framerInspect'); },
     exportStills: function (opts) { return withHost('framerExportStills', opts || {}); },
     build: function (plan) { return withHost('framerBuild', plan); },
-    calibrateCrop: function (opts) { return withHost('framerCalibrateCrop', opts || {}); }
+    calibrateCrop: function (opts) { return withHost('framerCalibrateCrop', opts || {}); },
+    focus: function (opts) { return withHost('framerFocus', opts || {}); }
   };
 }(window));

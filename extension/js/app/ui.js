@@ -14,6 +14,8 @@
   var preview = root.Framer.preview;
 
   var STORE_KEY = 'framer.settings.v2';
+  var BUILDS_KEY = 'framer.builds.v1';   // what was built where, for Focus moments
+  var MAX_BUILDS = 30;
 
   var state = {
     source: null,          // what framerInspect() reported
@@ -24,10 +26,12 @@
     dimsAssumed: false,    // true when the source size was taken from the sequence frame
     frameRequest: 0,       // guards against a slow render overwriting a newer one
     regions: null,
+    gameplayPlaced: false, // the user has put the gameplay box somewhere themselves
     layout: 'overlay',
     options: {},           // per layout id
     output: { width: 1080, height: 1920 },
     cropUnits: 'percent',
+    cropMode: 'minimal',   // 'minimal' keeps each layer's full frame; 'tight' crops to the region
     scrub: 0.35,
     plan: null,
     busy: false
@@ -93,7 +97,8 @@
    'fact-frame', 'scrub', 'src-w', 'src-h', 'btn-apply-size', 'tab-gameplay', 'tab-webcam',
    'picker', 'btn-detect', 'btn-suggest', 'btn-reset-regions', 'detect-note', 'r-x', 'r-y',
    'r-w', 'r-h', 'layout', 'layout-hint', 'layout-options', 'output', 'composite',
-   'plan-summary', 'opt-audio', 'opt-trim', 'opt-labels', 'seq-name', 'btn-build',
+   'plan-summary', 'opt-audio', 'opt-trim', 'opt-labels', 'opt-fullframe', 'seq-name', 'btn-build',
+   'btn-centre-h', 'btn-centre-v', 'btn-focus-gameplay', 'btn-focus-webcam', 'btn-focus-layout', 'focus-note',
    'crop-units', 'btn-calibrate', 'btn-copy-log', 'btn-clear-log', 'log'].forEach(function (id) {
     el[id] = $(id);
   });
@@ -130,7 +135,12 @@
     el.scrub.disabled = state.busy || !(state.video || (state.frameOrigin === 'premiere' && clipRange()));
     el['btn-detect'].disabled = state.busy || !hasFrame;
     el['btn-suggest'].disabled = state.busy || !hasDims;
+    el['btn-centre-h'].disabled = state.busy || !hasDims;
+    el['btn-centre-v'].disabled = state.busy || !hasDims;
     el['btn-build'].disabled = state.busy || !hasSource || !hasDims;
+    el['btn-focus-gameplay'].disabled = state.busy;
+    el['btn-focus-webcam'].disabled = state.busy;
+    el['btn-focus-layout'].disabled = state.busy;
   }
 
   /* ------------------------------------------------------------------ *
@@ -145,6 +155,7 @@
         output: state.output,
         cropUnits: state.cropUnits,
         scrub: state.scrub,
+        cropMode: state.cropMode,
         audio: el['opt-audio'].checked,
         trim: el['opt-trim'].checked,
         labels: el['opt-labels'].checked
@@ -175,6 +186,7 @@
     if (saved.output) { state.output = saved.output; }
     if (saved.cropUnits) { state.cropUnits = saved.cropUnits; }
     if (typeof saved.scrub === 'number') { state.scrub = saved.scrub; }
+    if (saved.cropMode === 'tight' || saved.cropMode === 'minimal') { state.cropMode = saved.cropMode; }
     if (saved.audio !== undefined) { el['opt-audio'].checked = !!saved.audio; }
     if (saved.trim !== undefined) { el['opt-trim'].checked = !!saved.trim; }
     if (saved.labels !== undefined) { el['opt-labels'].checked = !!saved.labels; }
@@ -263,6 +275,7 @@
     pickerCtl = preview.picker(el.picker, {
       onChange: function (role, rect) {
         state.regions[role] = rect;
+        if (role === 'gameplay') { state.gameplayPlaced = true; }
         writeRegionFields();
         recompute();
       },
@@ -302,7 +315,8 @@
         output: state.output,
         layout: state.layout,
         options: state.options[state.layout],
-        regions: state.regions
+        regions: state.regions,
+        cropMode: state.cropMode
       });
     } catch (e) {
       setStatus(e.message, 'error');
@@ -312,9 +326,32 @@
     }
 
     applyRegionLocks();
+    showEffectiveRegions();
     renderComposite();
     renderSummary();
     refreshEnabled();
+  }
+
+  /**
+   * The regions as the plan actually uses them. Where a layout fixes a layer's
+   * shape, the region is fitted to it before use; the picker shows that fitted
+   * box, so what is drawn over the frame is exactly what lands in the layer.
+   * state.regions keeps what the user asked for, so switching templates
+   * starts again from that rather than from another template's fit.
+   */
+  function effectiveRegions() {
+    var eff = { gameplay: state.regions.gameplay, webcam: state.regions.webcam };
+    if (state.plan) {
+      state.plan.layers.forEach(function (layer) {
+        if (layer.rect && eff.hasOwnProperty(layer.role)) { eff[layer.role] = layer.rect; }
+      });
+    }
+    return eff;
+  }
+
+  function showEffectiveRegions() {
+    ensurePicker().setRegions(effectiveRegions());
+    writeRegionFields();
   }
 
   function renderComposite() {
@@ -332,6 +369,7 @@
     for (var i = state.plan.layers.length - 1; i >= 0; i--) {
       var layer = state.plan.layers[i];
       var detail = 'scale ' + layer.scale.toFixed(1) + '%';
+      if (layer.role !== 'background') { detail += ' &middot; ' + describeCrop(layer.crop); }
       if (layer.blur > 0) { detail += ' &middot; blur ' + layer.blur; }
       if (layer.shadow) { detail += ' &middot; shadow'; }
       html += '<li><span class="role ' + layer.role + '">V' + (layer.track + 1) + ' ' + layer.role +
@@ -349,9 +387,15 @@
     el['plan-summary'].innerHTML = html + scaleWarning;
   }
 
+  function describeCrop(crop) {
+    if (!crop) { return 'full frame'; }
+    var sides = ['left', 'top', 'right', 'bottom'].filter(function (k) { return crop[k] > 0; });
+    return sides.length === 4 ? 'cropped to region' : 'crop ' + sides.join(' + ');
+  }
+
   function writeRegionFields() {
     var role = ensurePicker().getActive();
-    var rect = state.regions[role];
+    var rect = effectiveRegions()[role];
     el['r-x'].value = (rect.x * 100).toFixed(1);
     el['r-y'].value = (rect.y * 100).toFixed(1);
     el['r-w'].value = (rect.w * 100).toFixed(1);
@@ -367,12 +411,16 @@
       h: Number(el['r-h'].value) / 100
     };
     if (!isFinite(rect.x) || !isFinite(rect.y) || !isFinite(rect.w) || !isFinite(rect.h)) { return; }
-    state.regions[role] = rect;
-    ensurePicker().setRegions(state.regions);
-    state.regions = ensurePicker().getRegions();
-    writeRegionFields();
+    state.regions[role] = clampRegion(rect);
+    if (role === 'gameplay') { state.gameplayPlaced = true; }
     recompute();
     persist();
+  }
+
+  /** Keep a typed or detected region inside the frame and at a usable size. */
+  function clampRegion(rect) {
+    var w = L.clamp(rect.w, 0.03, 1), h = L.clamp(rect.h, 0.03, 1);
+    return { x: L.clamp(rect.x, 0, 1 - w), y: L.clamp(rect.y, 0, 1 - h), w: w, h: h };
   }
 
   /* ------------------------------------------------------------------ *
@@ -421,8 +469,7 @@
     el['src-h'].value = dims.height;
     if (!state.regions) { state.regions = L.defaultRegions(dims); }
     ensurePicker().setSource(dims);
-    ensurePicker().setRegions(state.regions);
-    writeRegionFields();
+    recompute();
   }
 
   /** The selected clip's span in sequence time, or null for a project-panel pick. */
@@ -600,14 +647,25 @@
         return;
       }
 
-      state.regions.webcam = found.rect;
+      state.regions.webcam = clampRegion(found.rect);
       ensurePicker().setActive('webcam');
       setActiveTab('webcam');
-      ensurePicker().setRegions(state.regions);
-      state.regions = ensurePicker().getRegions();
-      writeRegionFields();
       recompute();
       persist();
+
+      // A gameplay box nobody has placed yet would take the webcam in with it,
+      // showing the face twice - so frame it clear of the webcam now.
+      var autoFitted = false;
+      if (!state.gameplayPlaced && L.LAYOUTS[state.layout].usesWebcam) {
+        var gp = effectiveRegions().gameplay;
+        if (D._internals.intersects(gp, state.regions.webcam)) {
+          fitGameplay();
+          ensurePicker().setActive('webcam');
+          setActiveTab('webcam');
+          writeRegionFields();
+          autoFitted = true;
+        }
+      }
 
       var wording = {
         high: 'Confident match',
@@ -617,7 +675,8 @@
       el['detect-note'].className = 'hint ' + (found.confidence === 'high' ? 'ok' : 'warn');
       el['detect-note'].textContent = wording + ' from ' + frames.length + ' frame(s), score ' +
         found.score.toFixed(2) + '.';
-      setStatus(wording + '. Adjust the box if it is off, then build.',
+      setStatus(wording + '. ' + (autoFitted ? 'The gameplay was moved clear of it. ' : '') +
+                'Adjust the boxes if they are off, then build.',
                 found.confidence === 'high' ? 'ok' : 'warn');
       log('detected webcam at ' + JSON.stringify(found.rect) + ' confidence=' + found.confidence);
     }).catch(function (err) {
@@ -627,24 +686,60 @@
   }
 
   function suggestGameplay() {
-    if (!state.sourceDims || !state.plan) { return; }
+    var fitted = fitGameplay();
+    if (!fitted) { return; }
+    state.gameplayPlaced = true;
+    ensurePicker().setActive('gameplay');
+    setActiveTab('gameplay');
+    writeRegionFields();
+
+    var rect = fitted.rect, webcam = fitted.webcam;
+    var cx = rect.x + rect.w / 2;
+    var clear = !webcam || !D._internals.intersects(rect, webcam);
+    if (!clear) {
+      setStatus('The webcam box sits where no gameplay crop can avoid it, so the gameplay is centred over it. ' +
+                'Drag it to taste.', 'warn');
+    } else if (Math.abs(cx - 0.5) < 0.005) {
+      setStatus('Gameplay centred' + (webcam ? ', clear of the webcam box.' : '.'), 'ok');
+    } else {
+      setStatus('Gameplay framed as close to the centre as it goes without taking in the webcam box. ' +
+                'Use Centre to override.', 'ok');
+    }
+  }
+
+  /** Frame the gameplay centred and clear of the webcam. Returns what it used. */
+  function fitGameplay() {
+    if (!state.sourceDims || !state.plan) { return null; }
     var gameplayLayer = null;
     for (var i = 0; i < state.plan.layers.length; i++) {
       if (state.plan.layers[i].role === 'gameplay') { gameplayLayer = state.plan.layers[i]; }
     }
-    if (!gameplayLayer) { return; }
+    if (!gameplayLayer) { return null; }
 
     var aspect = gameplayLayer.target.w / gameplayLayer.target.h;
-    var rect = D.suggestGameplayRegion(state.regions.webcam, aspect, state.sourceDims);
+    var usesWebcam = L.LAYOUTS[state.layout].usesWebcam;
+    // The webcam box as marked, not as padded out to its band's shape: only
+    // the overlay itself must stay out of the gameplay.
+    var webcam = usesWebcam ? state.regions.webcam : null;
+    var rect = D.suggestGameplayRegion(webcam, aspect, state.sourceDims);
     state.regions.gameplay = rect;
-    ensurePicker().setActive('gameplay');
-    setActiveTab('gameplay');
-    ensurePicker().setRegions(state.regions);
-    state.regions = ensurePicker().getRegions();
-    writeRegionFields();
     recompute();
     persist();
-    setStatus('Gameplay region moved clear of the webcam box.', 'ok');
+    return { rect: rect, webcam: webcam };
+  }
+
+  /** Centre the selected box across ('h') or up and down ('v'), keeping its size. */
+  function centreRegion(axis) {
+    if (!state.sourceDims) { return; }
+    var role = ensurePicker().getActive();
+    var r = effectiveRegions()[role];
+    var next = { x: r.x, y: r.y, w: r.w, h: r.h };
+    if (axis === 'h') { next.x = 0.5 - next.w / 2; } else { next.y = 0.5 - next.h / 2; }
+    state.regions[role] = next;
+    if (role === 'gameplay') { state.gameplayPlaced = true; }
+    recompute();
+    setStatus((role === 'gameplay' ? 'Gameplay' : 'Webcam') + ' box centred ' +
+              (axis === 'h' ? 'across the frame.' : 'top to bottom.'), 'ok');
   }
 
   /* ------------------------------------------------------------------ *
@@ -684,21 +779,124 @@
       payload.trim = { inPoint: state.source.inPoint, outPoint: state.source.outPoint };
     }
 
+    var record = buildRecord();
     busy(true, 'Building the vertical sequence...');
     host.build(payload).then(function (res) {
       busy(false);
+      saveBuildRecord(res.sequence, record);
       var failed = res.layers.filter(function (r) { return !r.placed || r.transformed === false; });
       var summary = 'Built "' + res.sequence.name + '" at ' + res.sequence.width + ' x ' + res.sequence.height +
                     ' with ' + res.placed + ' layer(s).';
+      if (res.audioClips > 1) {
+        summary += ' The audio is on ' + res.audioClips + ' tracks - see Advanced > log.';
+      }
       if (failed.length) {
         setStatus(summary + ' ' + failed.length + ' layer(s) need a look - see Advanced > log.', 'warn');
       } else {
-        setStatus(summary, 'ok');
+        setStatus(summary, res.audioClips > 1 ? 'warn' : 'ok');
       }
       log('build: ' + JSON.stringify(res.layers));
     }).catch(function (err) {
       busy(false);
       setStatus('Build failed: ' + err.message, 'error');
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Focus moments                                                      *
+   * ------------------------------------------------------------------ */
+
+  /**
+   * What the host needs to re-shape pieces of a built sequence later: which
+   * track holds which layer, the layout values, and the full-frame values for
+   * a moment that shows only the gameplay or only the webcam.
+   */
+  function buildRecord() {
+    if (!state.plan || !state.sourceDims) { return null; }
+    var spec = { source: state.sourceDims, output: state.output, regions: state.regions };
+    var roles = {};
+    var layers = state.plan.layers.map(function (layer) {
+      roles[layer.role] = true;
+      return {
+        role: layer.role, track: layer.track, crop: layer.crop, scale: layer.scale,
+        position: layer.position, blur: layer.blur, shadow: layer.shadow
+      };
+    });
+    var focus = {};
+    ['gameplay', 'webcam'].forEach(function (role) {
+      if (!roles[role]) { return; }
+      var t = L.focusTransform(spec, role);
+      focus[role] = { crop: t.crop, scale: t.scale, position: t.position };
+    });
+    return { name: '', layout: state.layout, savedAt: Date.now(), layers: layers, focus: focus };
+  }
+
+  function loadBuildRecords() {
+    try {
+      var raw = localStorage.getItem(BUILDS_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveBuildRecord(sequence, record) {
+    if (!record || !sequence) { return; }
+    record.name = sequence.name;
+    var all = loadBuildRecords();
+    all[sequence.id || ('name:' + sequence.name)] = record;
+    // Keep the most recent builds only.
+    var keys = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || 0) - (all[a].savedAt || 0); });
+    keys.slice(MAX_BUILDS).forEach(function (k) { delete all[k]; });
+    try { localStorage.setItem(BUILDS_KEY, JSON.stringify(all)); } catch (e) { /* focus falls back to the current layout */ }
+  }
+
+  /** The record Focus used for a sequence the host names, if the panel has it. */
+  function focusRecordFor(sequence) {
+    var all = loadBuildRecords();
+    if (sequence && sequence.id && all[sequence.id]) { return all[sequence.id]; }
+    for (var k in all) {
+      if (all.hasOwnProperty(k) && sequence && all[k].name === sequence.name) { return all[k]; }
+    }
+    return buildRecord();
+  }
+
+  function focusMoment(mode) {
+    var wording = {
+      gameplay: 'Switching the selected moment to gameplay only...',
+      webcam: 'Switching the selected moment to webcam only...',
+      layout: 'Putting the selected moment back to the layout...'
+    };
+    el['focus-note'].textContent = '';
+    busy(true, wording[mode]);
+    host.focus({
+      mode: mode,
+      records: loadBuildRecords(),
+      fallback: buildRecord(),
+      cropUnits: state.cropUnits
+    }).then(function (res) {
+      busy(false);
+      var what = { gameplay: 'Gameplay only', webcam: 'Webcam only', layout: 'Back to the layout' }[mode];
+      var msg = what + ' for ' + res.moments + ' moment' + (res.moments === 1 ? '' : 's') +
+                ' (' + res.clips + ' clip' + (res.clips === 1 ? '' : 's') + ').';
+      var used = focusRecordFor(res.sequence);
+      var full = used && used.focus && used.focus[mode];
+      if (full && full.scale > 260) {
+        msg += ' The ' + mode + ' is scaled to ' + Math.round(full.scale) + '% there, so it will look soft.';
+      }
+      if (res.warnings) {
+        setStatus(msg + ' Some clips need a look - see Advanced > log.', 'warn');
+      } else {
+        setStatus(msg, 'ok');
+      }
+      el['focus-note'].className = 'hint ' + (res.warnings ? 'warn' : 'ok');
+      el['focus-note'].textContent = msg;
+    }).catch(function (err) {
+      busy(false);
+      setStatus(err.message, 'error');
+      el['focus-note'].className = 'hint warn';
+      el['focus-note'].textContent = err.message;
     });
   }
 
@@ -771,10 +969,19 @@
 
     el['btn-detect'].addEventListener('click', detectWebcam);
     el['btn-suggest'].addEventListener('click', suggestGameplay);
+    el['btn-centre-h'].addEventListener('click', function () { centreRegion('h'); });
+    el['btn-centre-v'].addEventListener('click', function () { centreRegion('v'); });
+    el['btn-focus-gameplay'].addEventListener('click', function () { focusMoment('gameplay'); });
+    el['btn-focus-webcam'].addEventListener('click', function () { focusMoment('webcam'); });
+    el['btn-focus-layout'].addEventListener('click', function () { focusMoment('layout'); });
+    el['opt-fullframe'].addEventListener('change', function () {
+      state.cropMode = el['opt-fullframe'].checked ? 'minimal' : 'tight';
+      recompute();
+      persist();
+    });
     el['btn-reset-regions'].addEventListener('click', function () {
       state.regions = L.defaultRegions(state.sourceDims || { width: 1920, height: 1080 });
-      ensurePicker().setRegions(state.regions);
-      writeRegionFields();
+      state.gameplayPlaced = false;
       recompute();
       persist();
       setStatus('Regions reset.', 'ok');
@@ -883,6 +1090,7 @@
     el['layout-hint'].textContent = L.LAYOUTS[state.layout].hint;
     el.output.value = state.output.width + 'x' + state.output.height;
     el['crop-units'].value = state.cropUnits;
+    el['opt-fullframe'].checked = state.cropMode === 'minimal';
     el.scrub.value = state.scrub;
 
     renderLayoutOptions();

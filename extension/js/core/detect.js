@@ -27,6 +27,7 @@
   var MAX_LINES = 14;          // candidate lines kept per axis
   var MIN_SPAN = 0.07;         // smallest accepted side, fraction of the frame
   var MAX_SPAN = 0.72;
+  var CLEARANCE = 0.02;        // gap kept between a suggested gameplay crop and the webcam
 
   function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -335,47 +336,83 @@
   }
 
   /**
-   * The gameplay region, given a known webcam box: the largest crop of the
-   * requested aspect that avoids the webcam box when that is possible.
+   * The gameplay region, given a known webcam box: a crop of the requested
+   * aspect, as large as possible and as close to the middle of the frame as
+   * possible, that does not take in the webcam box. The middle matters more
+   * than a few extra pixels: it is where the crosshair and the action are.
+   *
+   * Candidates are the largest centred crop, the same crop shrunk until it
+   * clears the webcam, and the largest crop in each strip of frame beside,
+   * above and below the webcam, pulled as close to the centre as that strip
+   * allows. The best trade of size against distance from the centre wins.
+   * With no usable candidate, it returns the centred crop over the webcam.
+   * The webcam box is padded by CLEARANCE first, so the crop does not end
+   * right on an overlay border.
    */
   function suggestGameplayRegion(webcamRect, targetAspect, source) {
-    var frameAspect = source.width / source.height;
-    var full = { x: 0, y: 0, w: 1, h: 1 };
-    if (!webcamRect) { return full; }
+    // The aspect as a ratio of normalised width to normalised height.
+    var na = targetAspect * source.height / source.width;
+    var fullW = Math.min(1, na), fullH = fullW / na;
+    var centred = placeNear({ w: fullW, h: fullH }, { x: 0, y: 0, w: 1, h: 1 });
+    if (!webcamRect || !intersects(centred, webcamRect)) { return centred; }
 
-    // Try the widest crop of the right aspect that clears the webcam box,
-    // testing each side it could be pushed away from.
-    var options = [];
-    var w, h;
+    // A little clearance: overlay borders and shadows sit just outside a
+    // detected box, and detection can come up a few pixels short.
+    var mx = CLEARANCE, my = CLEARANCE * source.width / source.height;
+    var cam = {
+      x: Math.max(0, webcamRect.x - mx), y: Math.max(0, webcamRect.y - my),
+      w: 0, h: 0
+    };
+    cam.w = Math.min(1, webcamRect.x + webcamRect.w + mx) - cam.x;
+    cam.h = Math.min(1, webcamRect.y + webcamRect.h + my) - cam.y;
+    var candidates = [];
 
-    // Keep full height, slide horizontally clear of the webcam.
-    h = 1;
-    w = clamp((targetAspect * h * source.height) / source.width, 0, 1);
-    if (webcamRect.x > 1 - (webcamRect.x + webcamRect.w)) {
-      options.push({ x: 0, y: 0, w: Math.min(w, webcamRect.x), h: h });
-    } else {
-      var startX = webcamRect.x + webcamRect.w;
-      options.push({ x: startX, y: 0, w: Math.min(w, 1 - startX), h: h });
-    }
+    // Centred, shrunk until it clears the webcam on one axis.
+    var halfW = 0;
+    if (cam.x >= 0.5) { halfW = Math.max(halfW, cam.x - 0.5); }
+    if (cam.x + cam.w <= 0.5) { halfW = Math.max(halfW, 0.5 - (cam.x + cam.w)); }
+    if (cam.y >= 0.5) { halfW = Math.max(halfW, (cam.y - 0.5) * na); }
+    if (cam.y + cam.h <= 0.5) { halfW = Math.max(halfW, (0.5 - (cam.y + cam.h)) * na); }
+    halfW = Math.min(halfW, fullW / 2);
+    if (halfW > 0) { candidates.push(placeNear({ w: halfW * 2, h: halfW * 2 / na }, { x: 0, y: 0, w: 1, h: 1 })); }
 
-    // Keep full width, slide vertically clear of the webcam.
-    w = 1;
-    h = clamp((w * source.width) / (targetAspect * source.height), 0, 1);
-    if (webcamRect.y > 1 - (webcamRect.y + webcamRect.h)) {
-      options.push({ x: 0, y: 0, w: w, h: Math.min(h, webcamRect.y) });
-    } else {
-      var startY = webcamRect.y + webcamRect.h;
-      options.push({ x: 0, y: startY, w: w, h: Math.min(h, 1 - startY) });
+    // The strips of frame the webcam leaves free on each side.
+    var strips = [
+      { x: 0, y: 0, w: cam.x, h: 1 },
+      { x: cam.x + cam.w, y: 0, w: 1 - (cam.x + cam.w), h: 1 },
+      { x: 0, y: 0, w: 1, h: cam.y },
+      { x: 0, y: cam.y + cam.h, w: 1, h: 1 - (cam.y + cam.h) }
+    ];
+    for (var i = 0; i < strips.length; i++) {
+      var strip = strips[i];
+      if (strip.w <= 0 || strip.h <= 0) { continue; }
+      var w = Math.min(fullW, strip.w, strip.h * na);
+      candidates.push(placeNear({ w: w, h: w / na }, strip));
     }
 
     var best = null;
-    for (var i = 0; i < options.length; i++) {
-      var o = options[i];
-      if (o.w <= 0.2 || o.h <= 0.2) { continue; }
-      var area = o.w * o.h;
-      if (!best || area > best.area) { best = { rect: o, area: area }; }
+    for (var c = 0; c < candidates.length; c++) {
+      var r = candidates[c];
+      // Too small to be worth using: under a quarter of the centred crop.
+      if (r.w * r.h < fullW * fullH * 0.25 || intersects(r, cam)) { continue; }
+      var dx = r.x + r.w / 2 - 0.5, dy = r.y + r.h / 2 - 0.5;
+      var score = (r.w * r.h) / (fullW * fullH) - 2 * Math.sqrt(dx * dx + dy * dy);
+      if (!best || score > best.score) { best = { rect: r, score: score }; }
     }
-    return best ? best.rect : full;
+    return best ? best.rect : centred;
+  }
+
+  /** True when two normalised rectangles share any area at all. */
+  function intersects(a, b) {
+    var e = 1e-6;
+    return a.x < b.x + b.w - e && b.x < a.x + a.w - e && a.y < b.y + b.h - e && b.y < a.y + a.h - e;
+  }
+
+  /** A w x h box inside `area`, as close to the frame centre as `area` allows. */
+  function placeNear(size, area) {
+    var x = clamp(0.5 - size.w / 2, area.x, area.x + area.w - size.w);
+    var y = clamp(0.5 - size.h / 2, area.y, area.y + area.h - size.h);
+    return { x: x, y: y, w: size.w, h: size.h };
   }
 
   return {
@@ -383,6 +420,6 @@
     suggestGameplayRegion: suggestGameplayRegion,
     grayDownsample: grayDownsample,
     temporalStats: temporalStats,
-    _internals: { candidateLines: candidateLines, gradients: gradients, overlaps: overlaps }
+    _internals: { candidateLines: candidateLines, gradients: gradients, overlaps: overlaps, intersects: intersects }
   };
 }));

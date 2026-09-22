@@ -107,9 +107,11 @@ async function boot(browser, config) {
           }
           case 'framerBuild':
             return reply({ ok: true,
-              sequence: { name: 'Vertical', width: 1080, height: 1920, videoTracks: 3 },
+              sequence: { id: 'seq-9', name: 'Vertical', width: 1080, height: 1920, videoTracks: 3 },
               layers: (arg.layers || []).map(l => ({ role: l.role, track: l.track + 1, placed: true, transformed: true })),
-              placed: (arg.layers || []).length, audio: true });
+              placed: (arg.layers || []).length, audio: true, audioClips: 1 });
+          case 'framerFocus':
+            return reply({ ok: true, mode: arg.mode, moments: 1, clips: 2, warnings: 0 });
           default:
             return callback('EvalScript error.');
         }
@@ -230,6 +232,82 @@ async function detect(page) {
     check('every layer value is finite and in range', layers.every(l =>
       isFinite(l.scale) && l.scale > 0 && l.position.every(isFinite) &&
       (!l.crop || ['left', 'top', 'right', 'bottom'].every(k => l.crop[k] >= 0 && l.crop[k] < 100))));
+
+    // --- split: fit, centre, aspect-locked drag, full-frame crops, focus ---
+    await page.selectOption('#layout', 'split');
+    await page.click('#btn-suggest');
+    const fit = await regionFields(page);
+    const overlapX = Math.min(fit.x + fit.w, TRUTH.x + TRUTH.w) - Math.max(fit.x, TRUTH.x);
+    const overlapY = Math.min(fit.y + fit.h, TRUTH.y + TRUTH.h) - Math.max(fit.y, TRUTH.y);
+    check('Fit gameplay clears the webcam box', overlapX <= 0.002 || overlapY <= 0.002,
+          `gameplay x ${(fit.x * 100).toFixed(1)}..${((fit.x + fit.w) * 100).toFixed(1)}`);
+    check('Fit gameplay stays near the middle', Math.abs(fit.x + fit.w / 2 - 0.5) < 0.06,
+          `centre at ${((fit.x + fit.w / 2) * 100).toFixed(1)}%`);
+
+    await page.click('#btn-centre-h');
+    const centred = await regionFields(page);
+    check('Centre puts the gameplay box in the middle', Math.abs(centred.x + centred.w / 2 - 0.5) < 0.002,
+          `centre at ${((centred.x + centred.w / 2) * 100).toFixed(2)}%`);
+
+    const bandAspect = 1080 / (1920 - Math.round(1920 * 0.34));
+    const shownAspect = centred.w * 1920 / (centred.h * 1080);
+    check('the gameplay box shown is the band shape the plan uses', Math.abs(shownAspect - bandAspect) < 0.02,
+          `${shownAspect.toFixed(3)} vs ${bandAspect.toFixed(3)}`);
+
+    await page.locator('#picker').scrollIntoViewIfNeeded();
+    const pbox = await page.locator('#picker').boundingBox();
+    const cx = pbox.x + pbox.width * (centred.x + centred.w), cy = pbox.y + pbox.height * (centred.y + centred.h);
+    await page.mouse.move(cx - 1, cy - 1);
+    await page.mouse.down();
+    await page.mouse.move(cx - pbox.width * 0.12, cy - pbox.height * 0.05, { steps: 8 });
+    await page.mouse.up();
+    const resized = await regionFields(page);
+    const resizedAspect = resized.w * 1920 / (resized.h * 1080);
+    check('dragging a corner resizes the gameplay box', resized.w < centred.w - 0.02,
+          `w ${(centred.w * 100).toFixed(1)} -> ${(resized.w * 100).toFixed(1)}`);
+    check('and keeps the band shape while doing it', Math.abs(resizedAspect - bandAspect) < 0.02,
+          `${resizedAspect.toFixed(3)} vs ${bandAspect.toFixed(3)}`);
+    check('and never leaves the frame', resized.x >= 0 && resized.y >= 0 &&
+          resized.x + resized.w <= 1.001 && resized.y + resized.h <= 1.001);
+
+    const summary = await page.textContent('#plan-summary');
+    check('the summary says the gameplay keeps its full frame', /gameplay[\s\S]*full frame/.test(summary), summary);
+
+    async function buildLayers() {
+      const n = (await calls(page, 'framerBuild')).length;
+      await page.click('#btn-build');
+      await page.waitForFunction((k) =>
+        window.__framerCalls.filter(c => c.name === 'framerBuild').length > k, n, { timeout: 5000 });
+      await page.waitForFunction(() => !document.getElementById('btn-build').disabled, null, { timeout: 5000 });
+      return (await calls(page, 'framerBuild')).pop().arg.layers;
+    }
+    const kept = await buildLayers();
+    const keptPlay = kept.find(l => l.role === 'gameplay'), keptCam = kept.find(l => l.role === 'webcam');
+    check('full frame: the gameplay layer is sent with no crop', keptPlay.crop === null, JSON.stringify(keptPlay.crop));
+    check('full frame: the webcam is cut only where the gameplay starts',
+          keptCam.crop && keptCam.crop.bottom > 0 && !keptCam.crop.left && !keptCam.crop.right && !keptCam.crop.top,
+          JSON.stringify(keptCam.crop));
+
+    await page.uncheck('#opt-fullframe');
+    const tight = await buildLayers();
+    check('with the option off, every layer is cropped to its region',
+          tight.every(l => l.crop && l.crop.left + l.crop.right + l.crop.top + l.crop.bottom > 0));
+    await page.check('#opt-fullframe');
+
+    await page.click('#btn-focus-gameplay');
+    await page.waitForFunction(() => document.getElementById('focus-note').textContent.length > 0,
+                               null, { timeout: 5000 });
+    const focusCall = (await calls(page, 'framerFocus')).pop();
+    const rec = focusCall && focusCall.arg.records && focusCall.arg.records['seq-9'];
+    check('Focus sends the record of the sequence that was built', !!rec && focusCall.arg.mode === 'gameplay',
+          focusCall ? Object.keys(focusCall.arg.records || {}).join(',') : 'no call');
+    check('the record carries full-frame values for both layers',
+          !!(rec && rec.focus.gameplay && rec.focus.webcam && rec.layers.length === 2));
+    check('Focus reports back', (await page.textContent('#focus-note')).includes('Gameplay only'));
+    await page.screenshot({ path: path.join(__dirname, 'shot-split-fitted.png'), fullPage: true });
+
+    await page.selectOption('#layout', 'overlay');
+    await page.click('#tab-webcam');
 
     // Region editing: typed values and dragging on the frame.
     await page.fill('#r-x', '10');

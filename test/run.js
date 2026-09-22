@@ -6,6 +6,7 @@ require('./detect.test.js');
 require('./syntax.test.js');
 require('./mp4dims.test.js');
 require('./host.test.js');
+require('./build.test.js');
 require('./panel.test.js');
 require('./integration.test.js');
 process.exit(h.run() === 0 ? 0 : 1);

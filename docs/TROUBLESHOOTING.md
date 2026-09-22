@@ -52,6 +52,30 @@ with any clip selected on a timeline: it writes Crop → Left and tells you what
 Effect Controls should read. If it reads something other than 25%, switch
 **Crop values are written as** to the other setting and build again.
 
+## Framer subclips in the project
+
+Each build adds a video-only and an audio-only subclip of the source to a
+**Framer** bin; the layers and the audio are made from them. That is what keeps
+the audio to one copy. Delete the bin once you no longer need the sequences
+built from it.
+
+## The audio is on more than one track
+
+The build log (Advanced) says how the audio was placed. A Premiere that cannot
+make subclips gets the clip itself on every layer, and Framer then unlinks and
+removes the extra audio copies. If the log says the removal failed, delete the
+extra audio clips by hand - keep the one on A1.
+
+## Focus moments says the clip "is not cut at the same points"
+
+Focus changes the piece you selected and the pieces directly above and below
+it with the same in and out. Cut with **Sequence > Add Edit to All Tracks**
+(Ctrl/Cmd+Shift+K) so every layer track is cut in the same place. A layer that
+is not cut there is left alone rather than changed for its whole length.
+
+If Focus says the sequence "was not built by Framer", open the vertical
+sequence itself. The panel remembers the last 30 sequences it built.
+
 ## "Could not apply effect ... it may be named differently in this language"
 
 Framer adds effects by name, and Premiere localises those names. It tries

@@ -6,12 +6,12 @@
 -->
 <ExtensionManifest Version="9.0"
                    ExtensionBundleId="com.niterix.framer"
-                   ExtensionBundleVersion="1.0.1"
+                   ExtensionBundleVersion="1.1.0"
                    ExtensionBundleName="Framer"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 
   <ExtensionList>
-    <Extension Id="com.niterix.framer.panel" Version="1.0.1"/>
+    <Extension Id="com.niterix.framer.panel" Version="1.1.0"/>
   </ExtensionList>
 
   <ExecutionEnvironment>

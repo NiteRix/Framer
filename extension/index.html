@@ -55,10 +55,16 @@
     <button id="tab-webcam" class="seg-btn is-on" role="tab">Webcam</button>
   </div>
   <canvas id="picker" width="720" height="405" class="canvas picker"></canvas>
-  <div class="row">
+  <div class="row wrap">
     <button id="btn-detect" class="primary" disabled>Auto-detect webcam</button>
-    <button id="btn-suggest" class="ghost" disabled title="Pick a gameplay crop that avoids the webcam box">Fit gameplay</button>
+    <button id="btn-suggest" class="ghost" disabled
+      title="Frame the gameplay as close to the middle of the frame as it can go without taking in the webcam">Fit gameplay</button>
     <button id="btn-reset-regions" class="ghost">Reset</button>
+  </div>
+  <div class="row wrap">
+    <span class="label">Centre the box</span>
+    <button id="btn-centre-h" class="ghost small" disabled title="Centre the selected box left to right">&harr; Across</button>
+    <button id="btn-centre-v" class="ghost small" disabled title="Centre the selected box top to bottom">&varr; Up&ndash;down</button>
   </div>
   <p id="detect-note" class="hint"></p>
   <div class="grid4">
@@ -68,7 +74,9 @@
     <label>H <input type="number" id="r-h" min="1" max="100" step="0.5"></label>
   </div>
   <p class="hint">Values are percentages of the source frame. Drag the box on the
-    frame above, or type exact numbers.</p>
+    frame above (it snaps to the centre), or type exact numbers. The box shows
+    exactly what lands in the layer: where the layout fixes its shape, the box
+    keeps that shape.</p>
 </section>
 
 <!-- 3. Layout ---------------------------------------------------------- -->
@@ -104,6 +112,10 @@
 <!-- 5. Build ----------------------------------------------------------- -->
 <section class="card">
   <h2>5 &middot; Build</h2>
+  <label class="check stacked"><input type="checkbox" id="opt-fullframe" checked>
+    <span>Keep the full frame on each layer
+      <span class="hint block">Layers are only cropped where they would show over another layer, so
+      you can delete one for a few seconds and still reframe the other.</span></span></label>
   <div class="row wrap">
     <label class="check"><input type="checkbox" id="opt-audio" checked> Keep audio</label>
     <label class="check"><input type="checkbox" id="opt-trim" checked> Match clip trim</label>
@@ -113,10 +125,26 @@
     <input type="text" id="seq-name" placeholder="&lt;clip name&gt; - Vertical">
   </label>
   <button id="btn-build" class="primary big" disabled>Build vertical sequence</button>
-  <p class="hint">Creates a new sequence and leaves the original untouched.</p>
+  <p class="hint">Creates a new sequence and leaves the original untouched. The layers are
+    video-only subclips (in a <strong>Framer</strong> bin), so the audio is on A1 exactly once.</p>
   <p class="hint">Premiere's <strong>Preferences &gt; Media &gt; Default Media Scaling</strong> must be
     <strong>None</strong>. On any other setting Premiere rescales inserted clips itself and the
     layers will not match this preview.</p>
+</section>
+
+<!-- 6. Focus ----------------------------------------------------------- -->
+<section class="card">
+  <h2>6 &middot; Focus moments</h2>
+  <p class="hint">Show one layer on its own for a few seconds. In the vertical sequence,
+    put the playhead at each end of the moment and use
+    <strong>Sequence &gt; Add Edit to All Tracks</strong> (Ctrl/Cmd+Shift+K). Click the piece in
+    between, then:</p>
+  <div class="row wrap focus-row">
+    <button id="btn-focus-gameplay" class="ghost">Gameplay only</button>
+    <button id="btn-focus-webcam" class="ghost">Webcam only</button>
+    <button id="btn-focus-layout" class="ghost">Back to layout</button>
+  </div>
+  <p id="focus-note" class="hint"></p>
 </section>
 
 <!-- Advanced ----------------------------------------------------------- -->

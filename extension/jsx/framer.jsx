@@ -22,7 +22,7 @@
 // Small helpers (ES3 - no forEach/map/indexOf on arrays, no let/const)
 // ---------------------------------------------------------------------------
 
-var FRAMER_VERSION = '1.0.1';
+var FRAMER_VERSION = '1.1.0';
 
 function fLog(log, msg) {
     if (log) { log.push(String(msg)); }
@@ -561,21 +561,29 @@ function fEnsureVideoTracks(seq, needed, log) {
 // Effects: add via QE, set parameters via the standard DOM
 // ---------------------------------------------------------------------------
 
-/** First real clip on a QE video track (QE counts gaps as items too). */
-function fQEClipOnTrack(qeTrack) {
+/**
+ * The n-th real clip on a QE video track (QE counts gaps as items too), in
+ * the same left-to-right order as the DOM's track.clips.
+ */
+function fQEClipOnTrack(qeTrack, n) {
+    var wanted = n || 0;
+    var seen = 0;
     var count = fSafe(function () { return qeTrack.numItems; }, 0);
     for (var i = 0; i < count; i++) {
         var item = fSafe(function () { return qeTrack.getItemAt(i); }, null);
         if (!item) { continue; }
         var type = fKey(fSafe(function () { return item.type; }, ''));
-        if (type === 'clip') { return item; }
         // Older builds do not report a type: fall back to anything named.
-        if (!type && fSafe(function () { return item.name; }, '')) { return item; }
+        var isClip = (type === 'clip') || (!type && fSafe(function () { return item.name; }, ''));
+        if (!isClip) { continue; }
+        if (seen === wanted) { return item; }
+        seen++;
     }
     return null;
 }
 
-function fAddVideoEffect(trackIndex, effectNames, log) {
+/** Add a video effect to the clipIndex-th clip (default the first) on a track. */
+function fAddVideoEffect(trackIndex, effectNames, log, clipIndex) {
     app.enableQE();
     var qeSeq = qe.project.getActiveSequence();
     if (!qeSeq) { fLog(log, 'QE has no active sequence'); return false; }
@@ -583,7 +591,7 @@ function fAddVideoEffect(trackIndex, effectNames, log) {
     var qeTrack = fSafe(function () { return qeSeq.getVideoTrackAt(trackIndex); }, null);
     if (!qeTrack) { fLog(log, 'QE could not reach video track ' + trackIndex); return false; }
 
-    var qeClip = fQEClipOnTrack(qeTrack);
+    var qeClip = fQEClipOnTrack(qeTrack, clipIndex);
     if (!qeClip) { fLog(log, 'QE found no clip on video track ' + trackIndex); return false; }
 
     for (var i = 0; i < effectNames.length; i++) {
@@ -669,18 +677,19 @@ function fApplyLayerTransform(trackItem, layer, cropUnits, log) {
     var applied = { crop: false, scale: false, position: false, blur: false, shadow: false };
 
     // --- Crop -------------------------------------------------------------
-    if (layer.crop) {
-        var cropComp = fFindComponent(trackItem, FX_NAMES.crop);
-        if (!cropComp) {
-            fLog(log, 'WARNING: Crop effect not present on the ' + layer.role + ' layer');
-        } else {
-            var k = (cropUnits === 'normalized') ? 0.01 : 1;
-            var a = fSetProperty(cropComp, ['Left'], CROP_INDEX.left, layer.crop.left * k, 'Crop > Left', log);
-            var b = fSetProperty(cropComp, ['Top'], CROP_INDEX.top, layer.crop.top * k, 'Crop > Top', log);
-            var c = fSetProperty(cropComp, ['Right'], CROP_INDEX.right, layer.crop.right * k, 'Crop > Right', log);
-            var d = fSetProperty(cropComp, ['Bottom'], CROP_INDEX.bottom, layer.crop.bottom * k, 'Crop > Bottom', log);
-            applied.crop = a && b && c && d;
-        }
+    // A layer with no crop still has any existing Crop zeroed, so switching a
+    // clip to a full-frame framing really does show the whole frame.
+    var cropComp = fFindComponent(trackItem, FX_NAMES.crop);
+    if (layer.crop && !cropComp) {
+        fLog(log, 'WARNING: Crop effect not present on the ' + layer.role + ' layer');
+    } else if (cropComp) {
+        var crop = layer.crop || { left: 0, top: 0, right: 0, bottom: 0 };
+        var k = (cropUnits === 'normalized') ? 0.01 : 1;
+        var a = fSetProperty(cropComp, ['Left'], CROP_INDEX.left, crop.left * k, 'Crop > Left', log);
+        var b = fSetProperty(cropComp, ['Top'], CROP_INDEX.top, crop.top * k, 'Crop > Top', log);
+        var c = fSetProperty(cropComp, ['Right'], CROP_INDEX.right, crop.right * k, 'Crop > Right', log);
+        var d = fSetProperty(cropComp, ['Bottom'], CROP_INDEX.bottom, crop.bottom * k, 'Crop > Bottom', log);
+        applied.crop = a && b && c && d;
     }
 
     // --- Motion -----------------------------------------------------------
@@ -719,6 +728,202 @@ function fApplyLayerTransform(trackItem, layer, cropUnits, log) {
 }
 
 // ---------------------------------------------------------------------------
+// Placing the source: a video-only copy per layer, the audio exactly once
+// ---------------------------------------------------------------------------
+
+/** The project's "Framer" bin, where the subclips go. Created on first use. */
+function fFramerBin(log) {
+    var root = fSafe(function () { return app.project.rootItem; }, null);
+    if (!root) { return null; }
+    var binType = fSafe(function () { return ProjectItemType.BIN; }, 2);
+
+    function find() {
+        var n = fSafe(function () { return root.children.numItems; }, 0);
+        for (var i = 0; i < n; i++) {
+            var child = fSafe(function () { return root.children[i]; }, null);
+            if (child && fSafe(function () { return child.type; }, -1) === binType &&
+                fSafe(function () { return child.name; }, '') === 'Framer') { return child; }
+        }
+        return null;
+    }
+
+    var bin = find();
+    if (bin) { return bin; }
+    var made = fSafe(function () { return root.createBin('Framer'); }, null);
+    // Some builds create the bin but return nothing.
+    bin = (made && fSafe(function () { return made.name; }, '')) ? made : find();
+    if (!bin) { fLog(log, 'could not create a "Framer" bin - subclips stay next to the source'); }
+    return bin;
+}
+
+/** `base`, or `base` with a number on it if the project already has that name. */
+function fUniqueName(base) {
+    var items = fAllProjectItems(app.project.rootItem, []);
+    var taken = {};
+    for (var i = 0; i < items.length; i++) {
+        taken[fStr(fSafe(function () { return items[i].name; }, ''))] = true;
+    }
+    if (!taken[base]) { return base; }
+    for (var n = 2; n < 1000; n++) {
+        var candidate = base.replace(/\)$/, ' ' + n + ')');
+        if (candidate === base) { candidate = base + ' ' + n; }
+        if (!taken[candidate]) { return candidate; }
+    }
+    return base;
+}
+
+/**
+ * A subclip of `projectItem` covering `range` (seconds), holding only video,
+ * only audio, or both. It goes in the Framer bin. Returns null when this build
+ * cannot make one; the caller then falls back to the clip itself.
+ */
+function fCreateSubclip(projectItem, baseName, range, takeVideo, takeAudio, log) {
+    if (!fSafe(function () { return typeof projectItem.createSubClip === 'function'; }, false)) {
+        fLog(log, 'this build has no ProjectItem.createSubClip');
+        return null;
+    }
+    var name = fUniqueName(baseName);
+    var start = new Time();
+    start.seconds = Number(range.inPoint);
+    var end = new Time();
+    end.seconds = Number(range.outPoint);
+
+    // Adobe's sample passes ticks; some builds want Time objects.
+    var forms = [[start.ticks, end.ticks], [start, end]];
+    var sub = null;
+    for (var i = 0; i < forms.length && !sub; i++) {
+        sub = fSafe(function () {
+            return projectItem.createSubClip(name, forms[i][0], forms[i][1], 0, takeVideo ? 1 : 0, takeAudio ? 1 : 0);
+        }, null);
+    }
+    if (!sub) {
+        // Created but not returned? Look it up by its (unique) name.
+        var items = fAllProjectItems(app.project.rootItem, []);
+        for (var j = 0; j < items.length && !sub; j++) {
+            if (fSafe(function () { return items[j].name; }, '') === name) { sub = items[j]; }
+        }
+    }
+    if (!sub) {
+        fLog(log, 'could not create the subclip "' + name + '"');
+        return null;
+    }
+
+    var bin = fFramerBin(log);
+    if (bin) { fSafe(function () { sub.moveBin(bin); return true; }, false); }
+    fLog(log, 'created subclip "' + name + '"');
+    return sub;
+}
+
+/** Put `item` at the start of an empty track. Overwrite, so nothing else shifts. */
+function fPlaceOnTrack(track, item) {
+    function count() { return fSafe(function () { return track.clips.numItems; }, 0); }
+    var before = count();
+    fSafe(function () { track.overwriteClip(item, 0); return true; }, false);
+    if (count() > before) { return true; }
+    fSafe(function () { track.insertClip(item, 0); return true; }, false);
+    return count() > before;
+}
+
+/** Every clip on the sequence's audio tracks, bottom track first. */
+function fAudioClips(seq) {
+    var found = [];
+    var n = fSafe(function () { return seq.audioTracks.numTracks; }, 0);
+    for (var a = 0; a < n; a++) {
+        var clips = fSafe(function () { return seq.audioTracks[a].clips; }, null);
+        var count = clips ? fSafe(function () { return clips.numItems; }, 0) : 0;
+        for (var c = 0; c < count; c++) {
+            var item = fSafe(function () { return clips[c]; }, null);
+            if (item) { found.push({ track: a, item: item }); }
+        }
+    }
+    return found;
+}
+
+function fVideoClipCount(seq) {
+    var total = 0;
+    var n = fSafe(function () { return seq.videoTracks.numTracks; }, 0);
+    for (var v = 0; v < n; v++) {
+        total += fSafe(function () { return seq.videoTracks[v].clips.numItems; }, 0);
+    }
+    return total;
+}
+
+/**
+ * Unlink the audio from the video it came in with, so removing a spare
+ * audio copy cannot take a video layer with it.
+ */
+function fUnlinkEverything(seq, log) {
+    if (!fSafe(function () { return typeof seq.unlinkSelection === 'function'; }, false)) { return false; }
+    var groups = ['videoTracks', 'audioTracks'];
+    var selected = [];
+    for (var g = 0; g < groups.length; g++) {
+        var n = fSafe(function () { return seq[groups[g]].numTracks; }, 0);
+        for (var t = 0; t < n; t++) {
+            var clips = fSafe(function () { return seq[groups[g]][t].clips; }, null);
+            var count = clips ? fSafe(function () { return clips.numItems; }, 0) : 0;
+            for (var c = 0; c < count; c++) {
+                var item = fSafe(function () { return clips[c]; }, null);
+                if (item && fSafe(function () { item.setSelected(true, true); return true; }, false)) { selected.push(item); }
+            }
+        }
+    }
+    var ok = fSafe(function () { seq.unlinkSelection(); return true; }, false);
+    for (var s = 0; s < selected.length; s++) {
+        fSafe(function () { selected[s].setSelected(false, true); return true; }, false);
+    }
+    if (ok) { fLog(log, 'unlinked audio from the video layers'); }
+    return ok;
+}
+
+function fRemoveTrackItem(item) {
+    if (fSafe(function () { item.remove(false, false); return true; }, false)) { return true; }
+    return fSafe(function () { item.remove(0, 0); return true; }, false);
+}
+
+/**
+ * Leave the new sequence with exactly one copy of the source audio (or none).
+ * With video-only layers there is nothing to remove, so an audio-only subclip
+ * goes on A1. If the layers had to be placed from the clip itself, each one
+ * brought its audio along: the lowest copy stays and the rest are removed.
+ */
+function fSettleAudio(seq, projectItem, sourceName, range, wantAudio, log) {
+    var clips = fAudioClips(seq);
+
+    if (wantAudio && !clips.length) {
+        var audioItem = (range.outPoint > range.inPoint)
+            ? fCreateSubclip(projectItem, sourceName + ' (Framer audio)', range, false, true, log)
+            : null;
+        var a1 = fSafe(function () { return seq.audioTracks[0]; }, null);
+        if (audioItem && a1 && fPlaceOnTrack(a1, audioItem)) {
+            fLog(log, 'placed the audio once, on A1');
+        } else {
+            fLog(log, 'WARNING: could not add the audio - drag the clip\'s audio onto A1 by hand');
+        }
+        return { count: fAudioClips(seq).length };
+    }
+
+    var keep = wantAudio ? 1 : 0;
+    if (clips.length > keep) {
+        fUnlinkEverything(seq, log);
+        var videoBefore = fVideoClipCount(seq);
+        var removed = 0;
+        for (var i = keep; i < clips.length; i++) {
+            if (fRemoveTrackItem(clips[i].item)) { removed++; }
+        }
+        var videoAfter = fVideoClipCount(seq);
+        fLog(log, 'removed ' + removed + ' extra audio cop' + (removed === 1 ? 'y' : 'ies') +
+                  (keep ? ', kept one on A' + (clips[0].track + 1) : ''));
+        if (videoAfter < videoBefore) {
+            fLog(log, 'WARNING: removing the extra audio also removed ' + (videoBefore - videoAfter) +
+                      ' video layer(s) linked to it. Undo, and remove the extra audio by hand.');
+        }
+    } else if (clips.length && keep) {
+        fLog(log, 'audio came across with the video, once');
+    }
+    return { count: fAudioClips(seq).length };
+}
+
+// ---------------------------------------------------------------------------
 // Entry point: build the vertical sequence
 // ---------------------------------------------------------------------------
 
@@ -732,6 +937,9 @@ function fApplyLayerTransform(trackItem, layer, cropUnits, log) {
  *   trim:   {inPoint, outPoint}, // seconds, optional
  *   options:{ sequenceName, includeAudio, cropUnits, colorLabels }
  * }
+ *
+ * Every layer is a video-only subclip of the source, so the sequence carries
+ * the source audio exactly once, on A1.
  */
 function framerBuild(planJson) {
     var log = [];
@@ -759,22 +967,43 @@ function framerBuild(planJson) {
         }
 
         var sourceName = fSafe(function () { return projectItem.name; }, 'clip');
+        var hasAudio = !!fSafe(function () { return projectItem.hasAudio(); }, false);
+        var wantAudio = options.includeAudio !== false && hasAudio;
 
-        // --- trim: applied to the project item, restored afterwards -------
-        var trim = plan.trim || null;
-        if (trim && trim.outPoint > trim.inPoint) {
-            restore = {
-                item: projectItem,
-                inPoint: fSafe(function () { return projectItem.getInPoint().seconds; }, null),
-                outPoint: fSafe(function () { return projectItem.getOutPoint().seconds; }, null)
-            };
-            var setIn = fSafe(function () { projectItem.setInPoint(trim.inPoint, 4); return true; }, false);
-            if (!setIn) { setIn = fSafe(function () { projectItem.setInPoint(trim.inPoint); return true; }, false); }
-            var setOut = fSafe(function () { projectItem.setOutPoint(trim.outPoint, 4); return true; }, false);
-            if (!setOut) { setOut = fSafe(function () { projectItem.setOutPoint(trim.outPoint); return true; }, false); }
-            fLog(log, (setIn && setOut)
-                ? ('trimmed source to ' + trim.inPoint.toFixed(3) + 's - ' + trim.outPoint.toFixed(3) + 's')
-                : 'WARNING: could not apply the trim - the full clip will be used');
+        // --- the span of the source to use -------------------------------
+        var trim = (plan.trim && plan.trim.outPoint > plan.trim.inPoint) ? plan.trim : null;
+        var range = trim || {
+            inPoint: fSafe(function () { return projectItem.getInPoint().seconds; }, 0),
+            outPoint: fSafe(function () { return projectItem.getOutPoint().seconds; }, 0)
+        };
+
+        // --- a video-only copy of the source for the layers --------------
+        // Placing the clip itself brings its audio along on every layer, so the
+        // layers use a video-only subclip and the audio goes in exactly once.
+        var videoItem = (range.outPoint > range.inPoint)
+            ? fCreateSubclip(projectItem, sourceName + ' (Framer video)', range, true, false, log)
+            : null;
+        var layerItem = videoItem || projectItem;
+        if (videoItem) {
+            fLog(log, 'layers use a video-only subclip, ' + range.inPoint.toFixed(3) + 's - ' +
+                      range.outPoint.toFixed(3) + 's');
+        } else {
+            fLog(log, 'no video-only subclip - placing the clip itself and removing the extra audio afterwards');
+            if (trim) {
+                // Without a subclip, the trim is applied to the project item and restored afterwards.
+                restore = {
+                    item: projectItem,
+                    inPoint: fSafe(function () { return projectItem.getInPoint().seconds; }, null),
+                    outPoint: fSafe(function () { return projectItem.getOutPoint().seconds; }, null)
+                };
+                var setIn = fSafe(function () { projectItem.setInPoint(trim.inPoint, 4); return true; }, false);
+                if (!setIn) { setIn = fSafe(function () { projectItem.setInPoint(trim.inPoint); return true; }, false); }
+                var setOut = fSafe(function () { projectItem.setOutPoint(trim.outPoint, 4); return true; }, false);
+                if (!setOut) { setOut = fSafe(function () { projectItem.setOutPoint(trim.outPoint); return true; }, false); }
+                fLog(log, (setIn && setOut)
+                    ? ('trimmed source to ' + trim.inPoint.toFixed(3) + 's - ' + trim.outPoint.toFixed(3) + 's')
+                    : 'WARNING: could not apply the trim - the full clip will be used');
+            }
         }
 
         // --- create the vertical sequence ---------------------------------
@@ -800,11 +1029,7 @@ function framerBuild(planJson) {
                 continue;
             }
 
-            var inserted = fSafe(function () { track.insertClip(projectItem, 0); return true; }, false);
-            if (!inserted) {
-                inserted = fSafe(function () { track.overwriteClip(projectItem, 0); return true; }, false);
-            }
-            if (!inserted) {
+            if (!fPlaceOnTrack(track, layerItem)) {
                 fLog(log, 'WARNING: could not place the ' + layer.role + ' layer on V' + (trackIndex + 1));
                 results.push({ role: layer.role, track: trackIndex + 1, placed: false, reason: 'insert failed' });
                 continue;
@@ -836,32 +1061,19 @@ function framerBuild(planJson) {
                 placed: true,
                 transformed: applied.scale && applied.position,
                 applied: applied,
+                cropped: !!layer.crop,
                 duration: fSafe(function () { return trackItem.end.seconds - trackItem.start.seconds; }, null)
             });
         }
 
-        // --- audio: exactly one copy --------------------------------------
-        var audioAdded = false;
-        if (options.includeAudio !== false && fSafe(function () { return projectItem.hasAudio(); }, false)) {
-            var audioClips = 0;
-            var aTracks = fSafe(function () { return seq.audioTracks.numTracks; }, 0);
-            for (var a = 0; a < aTracks; a++) {
-                audioClips += fSafe(function () { return seq.audioTracks[a].clips.numItems; }, 0);
-            }
-            if (audioClips > 0) {
-                fLog(log, 'audio came across with the video (' + audioClips + ' clip(s))');
-                audioAdded = true;
-            } else if (aTracks > 0) {
-                audioAdded = fSafe(function () { seq.audioTracks[0].insertClip(projectItem, 0); return true; }, false);
-                fLog(log, audioAdded ? 'inserted audio on A1' : 'WARNING: could not insert audio - add it by hand if needed');
-            }
-        }
-
+        // --- audio: exactly one copy, or none -----------------------------
+        var audio = fSettleAudio(seq, projectItem, sourceName, range, wantAudio, log);
         if (!placed) { return fError('No layers could be placed in the new sequence.', log); }
 
         return fResult({
             ok: true,
             sequence: {
+                id: fStr(fSafe(function () { return seq.sequenceID; }, '')),
                 name: fSafe(function () { return seq.name; }, seqName),
                 width: fSafe(function () { return seq.frameSizeHorizontal; }, out.width),
                 height: fSafe(function () { return seq.frameSizeVertical; }, out.height),
@@ -869,7 +1081,9 @@ function framerBuild(planJson) {
             },
             layers: results,
             placed: placed,
-            audio: audioAdded
+            audio: audio.count > 0,
+            audioClips: audio.count,
+            subclip: !!videoItem
         }, log);
 
     } catch (e) {
@@ -880,6 +1094,194 @@ function framerBuild(planJson) {
             fSafe(function () { restore.item.setInPoint(restore.inPoint, 4); return true; }, false);
             fSafe(function () { restore.item.setOutPoint(restore.outPoint, 4); return true; }, false);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point: focus a moment on one layer
+// ---------------------------------------------------------------------------
+
+/** Where a track item sits: its video track and its index on that track. */
+function fLocateVideoItem(seq, item) {
+    var n = fSafe(function () { return seq.videoTracks.numTracks; }, 0);
+    var id = fSafe(function () { return item.nodeId; }, null);
+    var start = fSafe(function () { return item.start.ticks; }, null);
+    for (var t = 0; t < n; t++) {
+        var clips = fSafe(function () { return seq.videoTracks[t].clips; }, null);
+        var count = clips ? fSafe(function () { return clips.numItems; }, 0) : 0;
+        for (var c = 0; c < count; c++) {
+            var clip = fSafe(function () { return clips[c]; }, null);
+            if (!clip) { continue; }
+            if (clip === item ||
+                (id !== null && fSafe(function () { return clip.nodeId; }, undefined) === id &&
+                 fSafe(function () { return clip.start.ticks; }, undefined) === start)) {
+                return { track: t, index: c, item: clip };
+            }
+        }
+    }
+    return null;
+}
+
+/** The clip on video track t that spans exactly [start, end] seconds, give or take a frame. */
+function fClipSpanning(seq, t, start, end) {
+    var clips = fSafe(function () { return seq.videoTracks[t].clips; }, null);
+    var count = clips ? fSafe(function () { return clips.numItems; }, 0) : 0;
+    var tolerance = 0.02;
+    var covering = null;
+    for (var c = 0; c < count; c++) {
+        var clip = fSafe(function () { return clips[c]; }, null);
+        if (!clip) { continue; }
+        var s = fSafe(function () { return clip.start.seconds; }, null);
+        var e = fSafe(function () { return clip.end.seconds; }, null);
+        if (s === null || e === null) { continue; }
+        if (Math.abs(s - start) < tolerance && Math.abs(e - end) < tolerance) {
+            return { track: t, index: c, item: clip, exact: true };
+        }
+        if (s < start + tolerance && e > end - tolerance) { covering = { track: t, index: c, item: clip, exact: false }; }
+    }
+    return covering;
+}
+
+function fSetEnabled(item, enabled, log, label) {
+    var ok = fSafe(function () { item.disabled = !enabled; return true; }, false);
+    if (ok && fSafe(function () { return item.disabled; }, !enabled) === !enabled) { return true; }
+    fLog(log, 'WARNING: could not ' + (enabled ? 'enable' : 'disable') + ' the ' + label +
+              ' clip - select it and press Shift+E to toggle it by hand');
+    return false;
+}
+
+/**
+ * framerFocus({mode, records, fallback, cropUnits})
+ *
+ * Switch the selected part of a Framer-built sequence to one layer:
+ *   mode 'gameplay' - gameplay fills the frame, webcam clip disabled
+ *   mode 'webcam'   - webcam fills the frame, gameplay clip disabled
+ *   mode 'layout'   - back to the layout it was built with, everything enabled
+ *
+ * The user cuts the moment out first (Add Edit to All Tracks) and selects any
+ * piece of it; the pieces on the other layer tracks with the same in and out
+ * are found here. records maps sequence IDs to what the panel built there:
+ * { name, layers:[{role, track, crop, scale, position, blur, shadow}], focus:{gameplay, webcam} }.
+ */
+function framerFocus(argJson) {
+    var log = [];
+    try {
+        var args = JSON.parse(argJson || '{}');
+        var mode = args.mode;
+        var cropUnits = args.cropUnits || 'percent';
+        if (mode !== 'gameplay' && mode !== 'webcam' && mode !== 'layout') {
+            return fError('Unknown focus mode: ' + mode, log);
+        }
+
+        var seq = fSafe(function () { return app.project.activeSequence; }, null);
+        if (!seq) { return fError('Open the vertical sequence Framer built, then try again.', log); }
+
+        // --- which build is this? ----------------------------------------
+        var records = args.records || {};
+        var seqId = fStr(fSafe(function () { return seq.sequenceID; }, ''));
+        var seqName = fStr(fSafe(function () { return seq.name; }, ''));
+        var record = (seqId && records[seqId]) ? records[seqId] : null;
+        if (!record) {
+            for (var key in records) {
+                if (records.hasOwnProperty(key) && records[key] && records[key].name === seqName) { record = records[key]; }
+            }
+        }
+        if (!record && args.fallback) {
+            record = args.fallback;
+            fLog(log, 'no record of building "' + seqName + '" in this panel - using the current panel layout');
+        }
+        if (!record || !record.layers || !record.layers.length) {
+            return fError('"' + seqName + '" was not built by Framer. Open the vertical sequence Framer made.', log);
+        }
+
+        var byTrack = {};
+        var roles = {};
+        for (var l = 0; l < record.layers.length; l++) {
+            byTrack[record.layers[l].track] = record.layers[l];
+            roles[record.layers[l].role] = record.layers[l];
+        }
+        if (mode !== 'layout' && !roles[mode]) {
+            return fError('This sequence has no ' + mode + ' layer.', log);
+        }
+        if (mode !== 'layout' && !(record.focus && record.focus[mode])) {
+            return fError('No full-frame framing was recorded for the ' + mode + ' layer. Build again.', log);
+        }
+
+        // --- the moments: spans of the selected layer clips ----------------
+        var selection = fSafe(function () { return seq.getSelection(); }, null) || [];
+        var spans = [];
+        for (var i = 0; i < selection.length; i++) {
+            var where = fLocateVideoItem(seq, selection[i]);
+            if (!where || !byTrack[where.track]) { continue; }
+            var start = fSafe(function () { return where.item.start.seconds; }, null);
+            var end = fSafe(function () { return where.item.end.seconds; }, null);
+            if (start === null || end === null) { continue; }
+            var dup = false;
+            for (var d = 0; d < spans.length; d++) {
+                if (Math.abs(spans[d].start - start) < 0.02 && Math.abs(spans[d].end - end) < 0.02) { dup = true; }
+            }
+            if (!dup) { spans.push({ start: start, end: end }); }
+        }
+        if (!spans.length) {
+            return fError('Select the part of the vertical sequence to change: cut it out first ' +
+                          '(Sequence > Add Edit to All Tracks at each end), then click the piece.', log);
+        }
+
+        // --- apply ---------------------------------------------------------
+        var changed = 0;
+        var warnings = 0;
+        for (var m = 0; m < spans.length; m++) {
+            var span = spans[m];
+            for (var r = 0; r < record.layers.length; r++) {
+                var layer = record.layers[r];
+                var hit = fClipSpanning(seq, layer.track, span.start, span.end);
+                var label = layer.role + ' (V' + (layer.track + 1) + ')';
+                if (!hit) { continue; }
+                if (!hit.exact) {
+                    fLog(log, 'WARNING: the ' + label + ' clip is not cut at ' + span.start.toFixed(2) + 's - ' +
+                              span.end.toFixed(2) + 's, so it was left alone. Use Sequence > Add Edit to All Tracks.');
+                    warnings++;
+                    continue;
+                }
+
+                var target = null;
+                var enabled = true;
+                if (mode === 'layout') {
+                    target = layer;
+                } else if (layer.role === mode) {
+                    target = record.focus[mode];
+                } else if (layer.role === 'gameplay' || layer.role === 'webcam') {
+                    enabled = false;
+                } else {
+                    continue;               // a background stays as it is, hidden underneath
+                }
+
+                if (target) {
+                    var shape = {
+                        role: layer.role, crop: target.crop || null, scale: target.scale, position: target.position,
+                        blur: layer.blur || 0, shadow: false
+                    };
+                    if (shape.crop && !fFindComponent(hit.item, FX_NAMES.crop)) {
+                        fAddVideoEffect(layer.track, FX_NAMES.crop, log, hit.index);
+                    }
+                    var applied = fApplyLayerTransform(hit.item, shape, cropUnits, log);
+                    if (!(applied.scale && applied.position)) { warnings++; }
+                }
+                if (!fSetEnabled(hit.item, enabled, log, label)) { warnings++; }
+                changed++;
+            }
+        }
+
+        if (!changed) {
+            return fError('None of the selected clips are Framer layers of this sequence.', log);
+        }
+        fLog(log, 'focus "' + mode + '" applied to ' + spans.length + ' moment(s), ' + changed + ' clip(s)');
+        return fResult({
+            ok: true, mode: mode, moments: spans.length, clips: changed, warnings: warnings,
+            sequence: { id: seqId, name: seqName }
+        }, log);
+    } catch (e) {
+        return fError('focus failed: ' + e + (e.line ? (' (line ' + e.line + ')') : ''), log);
     }
 }
 
@@ -910,23 +1312,13 @@ function framerCalibrateCrop(argJson) {
         }
         var trackItem = selection[0];
 
-        // Which track is it on? Needed for the QE lookup that adds the effect.
-        var trackIndex = -1;
-        var vTracks = fSafe(function () { return seq.videoTracks.numTracks; }, 0);
-        for (var t = 0; t < vTracks && trackIndex < 0; t++) {
-            var clips = fSafe(function () { return seq.videoTracks[t].clips; }, null);
-            if (!clips) { continue; }
-            for (var c = 0; c < clips.numItems; c++) {
-                if (fSafe(function () { return clips[c].start.ticks === trackItem.start.ticks &&
-                                               clips[c].nodeId === trackItem.nodeId; }, false)) {
-                    trackIndex = t; break;
-                }
-            }
-        }
-        if (trackIndex < 0) { trackIndex = 0; }
+        // Which track and position is it at? Needed for the QE lookup that adds the effect.
+        var where = fLocateVideoItem(seq, trackItem);
+        if (!where) { return fError('Select a video clip on the timeline, then calibrate.', log); }
+        trackItem = where.item;
 
         if (!fFindComponent(trackItem, FX_NAMES.crop)) {
-            fAddVideoEffect(trackIndex, FX_NAMES.crop, log);
+            fAddVideoEffect(where.track, FX_NAMES.crop, log, where.index);
         }
         var cropComp = fFindComponent(trackItem, FX_NAMES.crop);
         if (!cropComp) { return fError('Could not apply the Crop effect to that clip.', log); }

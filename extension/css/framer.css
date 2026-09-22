@@ -160,6 +160,17 @@ label.check {
   color: var(--muted);
   cursor: pointer;
 }
+label.check.stacked {
+  align-items: flex-start;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+label.check.stacked input { margin-top: 2px; }
+.hint.block { display: block; }
+
+.row .label { color: var(--muted); margin-right: 2px; }
+button.small { padding: 3px 8px; }
+.focus-row { margin-top: 8px; }
 
 input[type="text"], input[type="number"], select {
   font: inherit;

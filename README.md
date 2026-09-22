@@ -27,8 +27,8 @@ Grab the latest build from [Releases](https://github.com/NiteRix/Framer/releases
 
 | You are on | Get |
 |---|---|
-| **Windows** | `Framer-1.0.1-Setup.exe` — run it, restart Premiere |
-| **macOS** | `Framer-1.0.1-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
+| **Windows** | `Framer-1.1.0-Setup.exe` — run it, restart Premiere |
+| **macOS** | `Framer-1.1.0-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
 
 The portable zip works on Windows too: unpack it and double-click
 `Install-Windows.bat`. Both install into your own user folder, so there is no
@@ -63,12 +63,39 @@ cd Framer
 2. **Mark the regions.** Press **Auto-detect webcam** and check the box it
    draws, or drag it yourself. Detection has Premiere render eight frames from
    across the clip, so you will see the playhead jump; it is put back
-   afterwards. The **Gameplay** tab marks what should fill the
-   main area; **Fit gameplay** moves it clear of the webcam.
+   afterwards. If you have not placed the gameplay yet, detection also frames
+   it clear of the webcam. The **Gameplay** tab marks what should fill the
+   main area; **Fit gameplay** frames it as close to the middle as it can go
+   without taking in the webcam, and **Centre the box** centres whichever box
+   is selected. Boxes snap to the centre lines while you drag them. Where a
+   template fixes a layer's shape, the box keeps that shape, so the box you
+   see is exactly what lands in the layer.
 3. **Pick a template** and adjust it. The preview is drawn from the same
    numbers that get written into Premiere, so it is not an approximation.
 4. **Build vertical sequence.** A new sequence appears in the project; the
-   original is untouched.
+   original is untouched. The layers are video-only subclips, filed in a
+   **Framer** bin, so the sequence carries the audio once, on A1.
+
+### The full frame stays on every layer
+
+With **Keep the full frame on each layer** on (the default), a layer is only
+cropped where the rest of its frame would show over another layer. In the
+split template the gameplay is not cropped at all and the webcam is only cut
+off along the edge where the gameplay starts; everything else runs off the
+canvas or sits under the layer above. The sequence looks exactly the same as a
+tightly cropped one - the test suite checks that point by point - but you can
+delete or disable a layer for a few seconds and the other one still has its
+whole picture to reframe. Turn the option off to crop every layer to its
+region, as 1.0 did.
+
+### Focus moments
+
+To show just the gameplay or just the webcam for a few seconds, cut the
+moment out in the vertical sequence (**Sequence → Add Edit to All Tracks**,
+Ctrl/Cmd+Shift+K, at each end), click the piece in between, and press
+**Gameplay only** or **Webcam only** in the panel. The chosen layer is
+re-framed to fill the whole canvas and the other one is switched off for
+just that piece. **Back to layout** puts the piece back the way it was built.
 
 ### Templates
 
@@ -86,7 +113,8 @@ Output presets cover 9:16, 4:5 and 1:1.
 Each layer is another copy of the source clip on its own video track, shaped by
 three parameters:
 
-- **Crop** (Left/Top/Right/Bottom) discards everything outside the region. The
+- **Crop** (Left/Top/Right/Bottom) discards the parts of the frame that would
+  otherwise show over another layer. The
   frame keeps its original size — the discarded pixels just become
   transparent, and the clip is *not* recentred.
 - **Motion → Scale** scales the frame about its centre.
@@ -151,7 +179,7 @@ always overrule it.
 ## Development
 
 ```bash
-npm test              # 65 tests: geometry, detection, host script, panel wiring
+npm test              # 83 tests: geometry, detection, host script, build and focus, panel wiring
 ```
 
 The geometry and detection modules (`extension/js/core/`) are dependency-free
