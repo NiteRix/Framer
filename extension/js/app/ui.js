@@ -12,6 +12,8 @@
   var host = root.Framer.host;
   var media = root.Framer.media;
   var preview = root.Framer.preview;
+  var SZ = root.Framer.safezones;
+  var safeview = root.Framer.safeview;
 
   var STORE_KEY = 'framer.settings.v2';
   var BUILDS_KEY = 'framer.builds.v1';   // what was built where, for Focus moments
@@ -34,8 +36,21 @@
     cropMode: 'minimal',   // 'minimal' keeps each layer's full frame; 'tight' crops to the region
     scrub: 0.35,
     plan: null,
-    busy: false
+    busy: false,
+    safe: {
+      platform: 'tiktok',  // 'tiktok' | 'shorts' | 'reels' | 'all'
+      source: 'preview',   // 'preview' (the layout being set up) | 'premiere' (the playhead)
+      ui: true, outline: true, shade: false,
+      follow: false,
+      still: null,         // the last frame Premiere rendered at the playhead
+      stillSize: null,     // that sequence's frame size
+      inFlight: false,
+      timer: null
+    }
   };
+
+  var SAFE_POLL_MS = 1500;
+  var PLATFORM_IDS = ['tiktok', 'shorts', 'reels', 'all'];
 
   /* ------------------------------------------------------------------ *
    * Layout option descriptors                                          *
@@ -99,6 +114,9 @@
    'r-w', 'r-h', 'layout', 'layout-hint', 'layout-options', 'output', 'composite',
    'plan-summary', 'opt-audio', 'opt-trim', 'opt-labels', 'opt-fullframe', 'seq-name', 'btn-build',
    'btn-centre-h', 'btn-centre-v', 'btn-focus-gameplay', 'btn-focus-webcam', 'btn-focus-layout', 'focus-note',
+   'safe-tiktok', 'safe-shorts', 'safe-reels', 'safe-all', 'safe-src-preview', 'safe-src-premiere',
+   'safe-canvas', 'safe-ui', 'safe-outline', 'safe-shade', 'safe-premiere-row', 'btn-safe-refresh',
+   'safe-follow', 'safe-note',
    'crop-units', 'btn-calibrate', 'btn-copy-log', 'btn-clear-log', 'log'].forEach(function (id) {
     el[id] = $(id);
   });
@@ -141,6 +159,7 @@
     el['btn-focus-gameplay'].disabled = state.busy;
     el['btn-focus-webcam'].disabled = state.busy;
     el['btn-focus-layout'].disabled = state.busy;
+    el['btn-safe-refresh'].disabled = state.busy || state.safe.inFlight;
   }
 
   /* ------------------------------------------------------------------ *
@@ -156,6 +175,10 @@
         cropUnits: state.cropUnits,
         scrub: state.scrub,
         cropMode: state.cropMode,
+        safe: {
+          platform: state.safe.platform, source: state.safe.source,
+          ui: state.safe.ui, outline: state.safe.outline, shade: state.safe.shade
+        },
         audio: el['opt-audio'].checked,
         trim: el['opt-trim'].checked,
         labels: el['opt-labels'].checked
@@ -187,6 +210,13 @@
     if (saved.cropUnits) { state.cropUnits = saved.cropUnits; }
     if (typeof saved.scrub === 'number') { state.scrub = saved.scrub; }
     if (saved.cropMode === 'tight' || saved.cropMode === 'minimal') { state.cropMode = saved.cropMode; }
+    if (saved.safe) {
+      if (PLATFORM_IDS.indexOf(saved.safe.platform) >= 0) { state.safe.platform = saved.safe.platform; }
+      if (saved.safe.source === 'premiere' || saved.safe.source === 'preview') { state.safe.source = saved.safe.source; }
+      ['ui', 'outline', 'shade'].forEach(function (k) {
+        if (typeof saved.safe[k] === 'boolean') { state.safe[k] = saved.safe[k]; }
+      });
+    }
     if (saved.audio !== undefined) { el['opt-audio'].checked = !!saved.audio; }
     if (saved.trim !== undefined) { el['opt-trim'].checked = !!saved.trim; }
     if (saved.labels !== undefined) { el['opt-labels'].checked = !!saved.labels; }
@@ -303,6 +333,7 @@
       state.plan = null;
       el['plan-summary'].innerHTML = '';
       preview.composite(el.composite, null, { output: state.output, layers: [] }, { width: 16, height: 9 });
+      renderSafe();
       refreshEnabled();
       return;
     }
@@ -329,6 +360,7 @@
     showEffectiveRegions();
     renderComposite();
     renderSummary();
+    renderSafe();
     refreshEnabled();
   }
 
@@ -743,6 +775,138 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Safe zones                                                         *
+   * ------------------------------------------------------------------ */
+
+  var safeFrame = null;   // offscreen canvas the layout preview is drawn into
+
+  /** The layout preview as a bare frame at the output size, for the phone view. */
+  function layoutFrame() {
+    if (!state.plan || !state.frameImage) { return null; }
+    safeFrame = safeFrame || document.createElement('canvas');
+    safeFrame.width = 540;
+    safeFrame.height = Math.round(540 * state.output.height / state.output.width);
+    preview.composite(safeFrame, state.frameImage, state.plan, state.sourceDims, true);
+    return safeFrame;
+  }
+
+  function renderSafe() {
+    var sf = state.safe;
+    var fromPremiere = sf.source === 'premiere';
+    var frame = fromPremiere ? sf.still : layoutFrame();
+    var output = (fromPremiere && sf.stillSize) ? sf.stillSize : state.output;
+    var webcam = null;
+    if (!fromPremiere && state.plan) {
+      state.plan.layers.forEach(function (l) { if (l.role === 'webcam') { webcam = l.visible; } });
+    }
+
+    safeview.draw(el['safe-canvas'], {
+      frame: frame,
+      output: output,
+      platform: sf.platform,
+      showUI: sf.ui,
+      showSafe: sf.outline,
+      shade: sf.shade,
+      highlight: webcam,
+      message: fromPremiere ? 'Grab the playhead frame' : 'Read a clip to preview it'
+    });
+    writeSafeNote(fromPremiere, output, webcam);
+  }
+
+  function writeSafeNote(fromPremiere, output, webcam) {
+    var note = el['safe-note'];
+    var sf = state.safe;
+    var who = sf.platform === 'all' ? 'any of the three apps\u2019' : SZ.platform(sf.platform).label + '\u2019s';
+
+    if (fromPremiere) {
+      if (!sf.still) {
+        note.className = 'hint';
+        note.textContent = 'Open the vertical sequence in Premiere, park the playhead, and grab the frame.';
+      } else if (sf.stillSize && sf.stillSize.width > sf.stillSize.height) {
+        note.className = 'hint warn';
+        note.textContent = 'The open sequence is ' + sf.stillSize.width + ' x ' + sf.stillSize.height +
+          ' - horizontal. Open the vertical sequence Framer built to check it.';
+      } else {
+        note.className = 'hint';
+        note.textContent = 'The frame under the playhead' + (sf.follow ? ', kept up to date' : '') + '.';
+      }
+      return;
+    }
+    if (!webcam) {
+      note.className = 'hint';
+      note.textContent = state.plan ? 'No webcam layer in this template.' : '';
+      return;
+    }
+
+    var cov = SZ.coverage(webcam, sf.platform, output);
+    var hits = cov.zones.filter(function (z) { return z.share >= 0.03; });
+    if (!hits.length) {
+      note.className = 'hint ok';
+      note.textContent = 'The webcam is clear of ' + who + ' buttons and captions.';
+      return;
+    }
+    note.className = 'hint warn';
+    note.textContent = 'The webcam is partly hidden on ' + (sf.platform === 'all' ? 'at least one app' :
+      SZ.platform(sf.platform).label) + ': ' + hits.map(function (z) {
+        return Math.round(z.share * 100) + '% under ' + z.label;
+      }).join(', ') + '.' + (cov.outside > 0.25 ? ' Move or resize it towards the clear area.' : '');
+  }
+
+  function setSafePlatform(id) {
+    state.safe.platform = id;
+    PLATFORM_IDS.forEach(function (p) { el['safe-' + p].classList.toggle('is-on', p === id); });
+    renderSafe();
+    persist();
+  }
+
+  function setSafeSource(source) {
+    state.safe.source = source;
+    el['safe-src-preview'].classList.toggle('is-on', source === 'preview');
+    el['safe-src-premiere'].classList.toggle('is-on', source === 'premiere');
+    el['safe-premiere-row'].hidden = source !== 'premiere';
+    if (source === 'premiere' && !state.safe.still) { grabPlayheadFrame(false); }
+    scheduleSafePoll();
+    renderSafe();
+    persist();
+  }
+
+  /** Ask Premiere for the frame under the playhead of whatever sequence is open. */
+  function grabPlayheadFrame(quiet) {
+    var sf = state.safe;
+    if (sf.inFlight) { return Promise.resolve(); }
+    sf.inFlight = true;
+    refreshEnabled();
+    return host.exportStills({ tag: 'safe', quiet: !!quiet }).then(function (res) {
+      var still = res.stills[0];
+      return media.loadImage(still.path).then(function (img) {
+        sf.still = img;
+        sf.stillSize = (res.width && res.height) ? { width: res.width, height: res.height }
+          : { width: img.naturalWidth, height: img.naturalHeight };
+      });
+    }).catch(function (err) {
+      if (!quiet) { setStatus('Could not grab the playhead frame: ' + err.message, 'error'); }
+      else { log('safe zones: ' + err.message); }
+    }).then(function () {
+      sf.inFlight = false;
+      refreshEnabled();
+      if (sf.source === 'premiere') { renderSafe(); }
+    });
+  }
+
+  /** While following the playhead, re-grab the frame every so often. */
+  function scheduleSafePoll() {
+    var sf = state.safe;
+    clearInterval(sf.timer);
+    sf.timer = null;
+    if (sf.source !== 'premiere' || !sf.follow) { return; }
+    sf.timer = setInterval(function () {
+      // Never compete with the panel's own renders, and rest while hidden.
+      if (state.busy || sf.inFlight || document.hidden) { return; }
+      grabPlayheadFrame(true);
+    }, SAFE_POLL_MS);
+  }
+
+  /* ------------------------------------------------------------------ *
    * Build                                                              *
    * ------------------------------------------------------------------ */
 
@@ -971,6 +1135,24 @@
     el['btn-suggest'].addEventListener('click', suggestGameplay);
     el['btn-centre-h'].addEventListener('click', function () { centreRegion('h'); });
     el['btn-centre-v'].addEventListener('click', function () { centreRegion('v'); });
+    PLATFORM_IDS.forEach(function (id) {
+      el['safe-' + id].addEventListener('click', function () { setSafePlatform(id); });
+    });
+    el['safe-src-preview'].addEventListener('click', function () { setSafeSource('preview'); });
+    el['safe-src-premiere'].addEventListener('click', function () { setSafeSource('premiere'); });
+    [['safe-ui', 'ui'], ['safe-outline', 'outline'], ['safe-shade', 'shade']].forEach(function (pair) {
+      el[pair[0]].addEventListener('change', function () {
+        state.safe[pair[1]] = el[pair[0]].checked;
+        renderSafe();
+        persist();
+      });
+    });
+    el['btn-safe-refresh'].addEventListener('click', function () { grabPlayheadFrame(false); });
+    el['safe-follow'].addEventListener('change', function () {
+      state.safe.follow = el['safe-follow'].checked;
+      scheduleSafePoll();
+      renderSafe();
+    });
     el['btn-focus-gameplay'].addEventListener('click', function () { focusMoment('gameplay'); });
     el['btn-focus-webcam'].addEventListener('click', function () { focusMoment('webcam'); });
     el['btn-focus-layout'].addEventListener('click', function () { focusMoment('layout'); });
@@ -1091,6 +1273,13 @@
     el.output.value = state.output.width + 'x' + state.output.height;
     el['crop-units'].value = state.cropUnits;
     el['opt-fullframe'].checked = state.cropMode === 'minimal';
+    el['safe-ui'].checked = state.safe.ui;
+    el['safe-outline'].checked = state.safe.outline;
+    el['safe-shade'].checked = state.safe.shade;
+    PLATFORM_IDS.forEach(function (p) { el['safe-' + p].classList.toggle('is-on', p === state.safe.platform); });
+    el['safe-src-preview'].classList.toggle('is-on', state.safe.source === 'preview');
+    el['safe-src-premiere'].classList.toggle('is-on', state.safe.source === 'premiere');
+    el['safe-premiere-row'].hidden = state.safe.source !== 'premiere';
     el.scrub.value = state.scrub;
 
     renderLayoutOptions();
@@ -1102,6 +1291,7 @@
 
     host.ping().then(function (res) {
       log('host script ready, Premiere ' + res.appVersion);
+      if (state.safe.source === 'premiere') { grabPlayheadFrame(true); }
     }).catch(function (err) {
       setStatus('The host script did not load: ' + err.message, 'error');
     });

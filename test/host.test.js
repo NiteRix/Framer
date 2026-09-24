@@ -178,13 +178,16 @@ test('clears stills from earlier renders', function () {
   var p = premiere();
   var folder = path.join(p.host.__tempDir, 'framer');
   fs.mkdirSync(folder, { recursive: true });
-  var stale = path.join(folder, 'framer_still_old_0.png');
+  var stale = path.join(folder, 'framer_still_ref_old_0.png');
+  var other = path.join(folder, 'framer_still_safe_old_0.png');
+  fs.writeFileSync(other, PNG);
   fs.writeFileSync(stale, PNG);
   var mine = path.join(folder, 'keep-me.txt');
   fs.writeFileSync(mine, 'x');
   p.call('framerExportStills', { times: [12] });
   assert.ok(!fs.existsSync(stale), 'old still removed');
   assert.ok(fs.existsSync(mine), 'unrelated files left alone');
+  assert.ok(fs.existsSync(other), 'stills rendered for another purpose left alone');
 });
 
 test('builds Windows paths with backslashes on Windows', function () {

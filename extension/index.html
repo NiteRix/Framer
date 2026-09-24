@@ -109,9 +109,39 @@
   <ul id="plan-summary" class="summary"></ul>
 </section>
 
-<!-- 5. Build ----------------------------------------------------------- -->
+<!-- 5. Safe zones ----------------------------------------------------- -->
 <section class="card">
-  <h2>5 &middot; Build</h2>
+  <h2>5 &middot; Safe zones</h2>
+  <div class="seg seg-accent" role="tablist" aria-label="Platform">
+    <button id="safe-tiktok" class="seg-btn is-on" role="tab">TikTok</button>
+    <button id="safe-shorts" class="seg-btn" role="tab">Shorts</button>
+    <button id="safe-reels" class="seg-btn" role="tab">Reels</button>
+    <button id="safe-all" class="seg-btn" role="tab" title="The area clear on all three">All</button>
+  </div>
+  <div class="seg seg-accent" role="tablist" aria-label="What to show">
+    <button id="safe-src-preview" class="seg-btn is-on" role="tab"
+      title="The layout you are setting up, before it is built">Layout preview</button>
+    <button id="safe-src-premiere" class="seg-btn" role="tab"
+      title="The frame under the playhead of the sequence open in Premiere">Premiere playhead</button>
+  </div>
+  <canvas id="safe-canvas" width="540" height="960" class="canvas composite"></canvas>
+  <div class="row wrap">
+    <label class="check"><input type="checkbox" id="safe-ui" checked> App interface</label>
+    <label class="check"><input type="checkbox" id="safe-outline" checked> Clear area</label>
+    <label class="check"><input type="checkbox" id="safe-shade"> Dim outside it</label>
+  </div>
+  <div id="safe-premiere-row" class="row wrap" hidden>
+    <button id="btn-safe-refresh" class="ghost">Grab playhead frame</button>
+    <label class="check"><input type="checkbox" id="safe-follow"> Follow the playhead</label>
+  </div>
+  <p id="safe-note" class="hint"></p>
+  <p class="hint">Keep faces, text and the action inside the clear area. The apps move their
+    buttons between versions and phones, so the lines are a guide, not a guarantee.</p>
+</section>
+
+<!-- 6. Build ----------------------------------------------------------- -->
+<section class="card">
+  <h2>6 &middot; Build</h2>
   <label class="check stacked"><input type="checkbox" id="opt-fullframe" checked>
     <span>Keep the full frame on each layer
       <span class="hint block">Layers are only cropped where they would show over another layer, so
@@ -132,9 +162,9 @@
     layers will not match this preview.</p>
 </section>
 
-<!-- 6. Focus ----------------------------------------------------------- -->
+<!-- 7. Focus ----------------------------------------------------------- -->
 <section class="card">
-  <h2>6 &middot; Focus moments</h2>
+  <h2>7 &middot; Focus moments</h2>
   <p class="hint">Show one layer on its own for a few seconds. In the vertical sequence,
     put the playhead at each end of the moment and use
     <strong>Sequence &gt; Add Edit to All Tracks</strong> (Ctrl/Cmd+Shift+K). Click the piece in
@@ -172,9 +202,11 @@
 <script src="js/lib/CSInterface.js"></script>
 <script src="js/core/layout.js"></script>
 <script src="js/core/detect.js"></script>
+<script src="js/core/safezones.js"></script>
 <script src="js/app/host.js"></script>
 <script src="js/app/media.js"></script>
 <script src="js/app/preview.js"></script>
+<script src="js/app/safeview.js"></script>
 <script src="js/app/ui.js"></script>
 </body>
 </html>

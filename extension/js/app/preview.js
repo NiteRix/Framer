@@ -324,7 +324,7 @@
    * usually a downscaled grab, and sampling it at source resolution would read
    * past its edges.
    */
-  function composite(canvas, image, plan, sourceDims) {
+  function composite(canvas, image, plan, sourceDims, bare) {
     var ctx = canvas.getContext('2d');
     var out = plan.output;
     var scale = Math.min(canvas.width / out.width, canvas.height / out.height);
@@ -387,7 +387,9 @@
     }
     ctx.restore();
 
-    // Frame the canvas edge so the 9:16 bounds are obvious.
+    // Frame the canvas edge so the 9:16 bounds are obvious - unless the
+    // result is going to be drawn somewhere else, like the safe zone view.
+    if (bare) { return; }
     ctx.strokeStyle = 'rgba(255,255,255,0.16)';
     ctx.lineWidth = 1;
     ctx.strokeRect(offX + 0.5, offY + 0.5, out.width * scale - 1, out.height * scale - 1);

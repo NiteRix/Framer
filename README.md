@@ -27,8 +27,8 @@ Grab the latest build from [Releases](https://github.com/NiteRix/Framer/releases
 
 | You are on | Get |
 |---|---|
-| **Windows** | `Framer-1.1.0-Setup.exe` — run it, restart Premiere |
-| **macOS** | `Framer-1.1.0-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
+| **Windows** | `Framer-1.2.0-Setup.exe` — run it, restart Premiere |
+| **macOS** | `Framer-1.2.0-portable.zip` — unpack, double-click `Install-Mac.command`, restart Premiere |
 
 The portable zip works on Windows too: unpack it and double-click
 `Install-Windows.bat`. Both install into your own user folder, so there is no
@@ -87,6 +87,29 @@ tightly cropped one - the test suite checks that point by point - but you can
 delete or disable a layer for a few seconds and the other one still has its
 whole picture to reframe. Turn the option off to crop every layer to its
 region, as 1.0 did.
+
+### Safe zones
+
+The **Safe zones** card shows the video on a phone screen with a short-form
+app's interface over it - the buttons down the right, the caption and account
+name, the top tabs and the navigation bar - for **TikTok**, **YouTube Shorts**
+or **Instagram Reels**, or **All** three at once, where the clear area is the
+part that is clear on every one of them. Switch the mock interface, the
+clear-area outline and dimming outside it on and off independently.
+
+It can show two things:
+
+- **Layout preview** - the layout you are setting up, before you build. It
+  also checks the webcam box and says how much of it each part of the
+  interface would hide, e.g. "31% under the top tabs".
+- **Premiere playhead** - the frame under the playhead of whatever sequence is
+  open, rendered by Premiere, so you can check the edited sequence (captions,
+  Focus moments and all). **Follow the playhead** keeps it up to date while
+  you scrub.
+
+The interface is a generic mock-up placed from the apps' published creative
+guidance, not their artwork. The apps move their buttons between versions and
+phones, so treat the lines as a guide.
 
 ### Focus moments
 
@@ -179,7 +202,7 @@ always overrule it.
 ## Development
 
 ```bash
-npm test              # 83 tests: geometry, detection, host script, build and focus, panel wiring
+npm test              # 89 tests: geometry, detection, safe zones, host script, build and focus, panel wiring
 ```
 
 The geometry and detection modules (`extension/js/core/`) are dependency-free
@@ -221,7 +244,9 @@ extension/                     the payload that gets installed
   js/core/detect.js            webcam rectangle detection
   js/app/host.js               promise bridge to ExtendScript
   js/app/media.js              media loading and frame sampling
+  js/core/safezones.js         platform safe-zone geometry
   js/app/preview.js            region picker and composite preview
+  js/app/safeview.js           safe-zone phone view and app mock-ups
   js/app/ui.js                 panel controller
   jsx/framer.jsx               Premiere host script: sequence building, effects
   jsx/mp4dims.jsx              frame size from an MP4/MOV header

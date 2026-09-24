@@ -22,7 +22,7 @@
 // Small helpers (ES3 - no forEach/map/indexOf on arrays, no let/const)
 // ---------------------------------------------------------------------------
 
-var FRAMER_VERSION = '1.1.0';
+var FRAMER_VERSION = '1.2.0';
 
 function fLog(log, msg) {
     if (log) { log.push(String(msg)); }
@@ -298,9 +298,13 @@ function fIsWindows() {
     return fStr(fSafe(function () { return $.os; }, '')).indexOf('Windows') !== -1;
 }
 
-/** Remove stills left over from earlier renders; they are only ever temporary. */
-function fCleanStills(folder) {
-    var old = fSafe(function () { return folder.getFiles(STILL_PREFIX + '*'); }, null);
+/**
+ * Remove stills left over from earlier renders; they are only ever temporary.
+ * Only stills with the same tag go, so a safe-zone refresh cannot delete a
+ * reference frame the panel is still loading, or the other way round.
+ */
+function fCleanStills(folder, tag) {
+    var old = fSafe(function () { return folder.getFiles(STILL_PREFIX + tag + '_*'); }, null);
     if (!old) { return; }
     for (var i = 0; i < old.length; i++) {
         fSafe(function () { old[i].remove(); return true; }, false);
@@ -339,7 +343,7 @@ function fWaitForFile(paths, timeoutMs) {
  * panel makes. The DOM Sequence.exportFramePNG is tried afterwards only
  * because it has appeared in some builds.
  */
-function fRenderFrame(seq, qeSeq, seconds, folder, index, log) {
+function fRenderFrame(seq, qeSeq, seconds, folder, index, log, tag, quiet) {
     if (seconds !== null && seconds !== undefined) {
         var target = new Time();
         target.seconds = Number(seconds);
@@ -348,7 +352,7 @@ function fRenderFrame(seq, qeSeq, seconds, folder, index, log) {
     var at = fSafe(function () { return seq.getPlayerPosition().seconds; }, seconds);
 
     var sep = fIsWindows() ? '\\' : '/';
-    var base = folder.fsName + sep + STILL_PREFIX + (new Date()).getTime() + '_' + index;
+    var base = folder.fsName + sep + STILL_PREFIX + (tag || 'ref') + '_' + (new Date()).getTime() + '_' + index;
 
     var attempts = [];
     if (qeSeq) {
@@ -374,7 +378,7 @@ function fRenderFrame(seq, qeSeq, seconds, folder, index, log) {
         }
         var file = fWaitForFile(attempt.outputs, 8000);
         if (file) {
-            if (index === 0) { fLog(log, 'stills rendered with ' + attempt.label); }
+            if (index === 0 && !quiet) { fLog(log, 'stills rendered with ' + attempt.label); }
             return { path: file.fsName, seconds: at };
         }
         fLog(log, attempt.label + ' ran but no file appeared');
@@ -383,7 +387,7 @@ function fRenderFrame(seq, qeSeq, seconds, folder, index, log) {
 }
 
 /**
- * framerExportStills({times: [seconds, ...]})
+ * framerExportStills({times: [seconds, ...], tag: 'ref' | 'safe'})
  *
  * Render frames of the active sequence to disk, at sequence times. With no
  * times, renders the frame under the playhead. The playhead is put back where
@@ -407,7 +411,9 @@ function framerExportStills(argJson) {
 
         var folder = new Folder(Folder.temp.fsName + '/framer');
         if (!folder.exists) { folder.create(); }
-        fCleanStills(folder);
+        // What the stills are for: 'ref' (reference frames) or 'safe' (safe zones).
+        var tag = String(args.tag || 'ref').replace(/[^a-z]/g, '') || 'ref';
+        fCleanStills(folder, tag);
 
         var times = (args.times && args.times.length) ? args.times : [null];
         // Only remember (and later restore) the playhead if we are going to move it.
@@ -415,7 +421,7 @@ function framerExportStills(argJson) {
 
         var stills = [];
         for (var i = 0; i < times.length; i++) {
-            var rendered = fRenderFrame(seq, qeSeq, times[i], folder, i, log);
+            var rendered = fRenderFrame(seq, qeSeq, times[i], folder, i, log, tag, !!args.quiet);
             if (rendered) { stills.push(rendered); }
             else if (i === 0) { break; }           // if the first fails, the rest will too
         }

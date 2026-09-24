@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.2.0
+
+### Safe zones
+
+A new **Safe zones** card shows the video on a phone screen with the
+interface of **TikTok**, **YouTube Shorts** or **Instagram Reels** over it -
+the button column, caption, top tabs and navigation bar - or all three at
+once, where the outlined clear area is the part none of them covers. The mock
+interface, the clear-area outline and dimming outside it switch on and off
+separately.
+
+It shows either the **layout preview**, before building, or the frame under
+Premiere's **playhead** in whatever sequence is open, so a finished edit can
+be checked too. **Follow the playhead** re-renders it every second and a half
+while the panel is idle. On the layout preview it also works out how much of
+the webcam box each part of the interface hides and says so - the split
+template's default webcam band, for instance, loses about a third of itself
+under TikTok's top tabs.
+
+The geometry lives in `js/core/safezones.js`, measured on a 1080 x 1920
+screen; 4:5 and 1:1 videos are placed full width and centred, as the apps
+show them. The interface is a generic mock-up, not the apps' artwork.
+
+### Smaller changes
+
+- Stills Premiere renders are tagged by what they are for, and only stills with
+  the same tag are cleared, so a safe-zone refresh can never delete a reference
+  frame the panel is still loading.
+- Repeated playhead grabs do not fill the log.
+
+89 tests, up from 83; the browser test drives every platform, both sources,
+following the playhead and the horizontal-sequence warning.
+
 ## 1.1.0
 
 Fixes from using 1.0.1 on real footage: layers were cropped with no way back,

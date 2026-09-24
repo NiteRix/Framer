@@ -3,6 +3,7 @@ var h = require('./harness');
 process.stdout.write('\nFramer test suite\n\n');
 require('./layout.test.js');
 require('./detect.test.js');
+require('./safezones.test.js');
 require('./syntax.test.js');
 require('./mp4dims.test.js');
 require('./host.test.js');

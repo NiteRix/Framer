@@ -231,6 +231,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: #5a626e; }
 }
 .seg-btn.is-on { color: var(--accent-ink); font-weight: 600; }
 #tab-gameplay.is-on { background: var(--gameplay); }
+.seg-accent .seg-btn.is-on { background: var(--accent); }
 #tab-webcam.is-on { background: var(--webcam); }
 
 /* --- canvases --------------------------------------------------------- */
@@ -320,3 +321,5 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: #5a626e; }
   -webkit-user-select: text;
   user-select: text;
 }
+
+[hidden] { display: none !important; }

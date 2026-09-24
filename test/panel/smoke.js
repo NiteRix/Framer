@@ -65,6 +65,7 @@ async function boot(browser, config) {
 
   await page.addInitScript((cfg) => {
     window.__framerCalls = [];
+    window.__cfg = cfg;
     window.__adobe_cep__ = {
       getHostEnvironment: () => JSON.stringify({
         appName: 'PPRO', appVersion: '26.0.1', appLocale: 'en_US', appId: 'PPRO',
@@ -102,6 +103,12 @@ async function boot(browser, config) {
               return reply({ ok: false, error: 'Premiere would not render a still frame from the active sequence.' });
             }
             const times = (arg && arg.times) || [null];
+            if (arg && arg.tag === 'safe') {
+              // The playhead frame of whatever sequence is open: by default the vertical one.
+              const size = cfg.safeSize || { width: 1080, height: 1920 };
+              return reply({ ok: true, width: size.width, height: size.height, sequence: 'Vertical',
+                stills: [{ path: cfg.stills[0], seconds: 11 }] });
+            }
             return reply({ ok: true, width: 1920, height: 1080, sequence: 'source',
               stills: times.map((t, i) => ({ path: cfg.stills[i % cfg.stills.length], seconds: t === null ? 11 : t })) });
           }
@@ -305,6 +312,73 @@ async function detect(page) {
           !!(rec && rec.focus.gameplay && rec.focus.webcam && rec.layers.length === 2));
     check('Focus reports back', (await page.textContent('#focus-note')).includes('Gameplay only'));
     await page.screenshot({ path: path.join(__dirname, 'shot-split-fitted.png'), fullPage: true });
+
+    // --- safe zones ------------------------------------------------------
+    async function safePixels() {
+      return page.evaluate(() => {
+        const c = document.getElementById('safe-canvas');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let lit = 0, hash = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if ((d[i] + d[i + 1] + d[i + 2]) / 3 > 24) { lit++; }
+          hash = (hash * 31 + d[i] + 7 * d[i + 1] + 13 * d[i + 2]) | 0;
+        }
+        return { lit: lit / (d.length / 4), hash };
+      });
+    }
+    const tiktok = await safePixels();
+    check('safe zones: the layout preview shows on the phone screen', tiktok.lit > 0.8,
+          `${(tiktok.lit * 100).toFixed(0)}% lit`);
+    const safeNote = await page.textContent('#safe-note');
+    check('safe zones: the split webcam band is flagged under the top tabs', /under the top tabs/.test(safeNote), safeNote);
+    await page.locator('#safe-canvas').scrollIntoViewIfNeeded();
+    await page.locator('#safe-canvas').screenshot({ path: path.join(__dirname, 'shot-safe-tiktok.png') });
+
+    const shots = {};
+    for (const id of ['shorts', 'reels', 'all']) {
+      await page.click('#safe-' + id);
+      shots[id] = await safePixels();
+      await page.locator('#safe-canvas').screenshot({ path: path.join(__dirname, `shot-safe-${id}.png`) });
+    }
+    check('safe zones: each platform draws its own interface',
+          new Set([tiktok.hash, shots.shorts.hash, shots.reels.hash, shots.all.hash]).size === 4);
+    check('safe zones: "All" talks about every app', /at least one app/.test(await page.textContent('#safe-note')),
+          await page.textContent('#safe-note'));
+    await page.click('#safe-tiktok');
+
+    await page.uncheck('#safe-ui');
+    const noUi = await safePixels();
+    check('safe zones: the interface can be switched off', noUi.hash !== tiktok.hash);
+    await page.check('#safe-ui');
+
+    const stillsBefore = (await calls(page, 'framerExportStills')).length;
+    await page.click('#safe-src-premiere');
+    await page.waitForFunction((n) =>
+      window.__framerCalls.filter(c => c.name === 'framerExportStills').length > n, stillsBefore, { timeout: 5000 });
+    await page.waitForFunction(() => /playhead/.test(document.getElementById('safe-note').textContent),
+                               null, { timeout: 5000 });
+    const grab = (await calls(page, 'framerExportStills')).pop();
+    check('safe zones: Premiere is asked for the playhead frame, tagged, without moving the playhead',
+          grab.arg.tag === 'safe' && !grab.arg.times, JSON.stringify(grab.arg));
+    check('safe zones: the refresh controls show in Premiere mode', await page.isVisible('#btn-safe-refresh'));
+    check('safe zones: a vertical sequence gets no warning',
+          !(await page.getAttribute('#safe-note', 'class')).includes('warn'), await page.textContent('#safe-note'));
+
+    await page.check('#safe-follow');
+    const followFrom = (await calls(page, 'framerExportStills')).length;
+    await page.waitForFunction((n) =>
+      window.__framerCalls.filter(c => c.name === 'framerExportStills').length > n, followFrom, { timeout: 5000 });
+    const polled = (await calls(page, 'framerExportStills')).pop();
+    check('safe zones: following the playhead keeps re-grabbing, quietly', polled.arg.quiet === true);
+    await page.uncheck('#safe-follow');
+
+    await page.evaluate(() => { window.__cfg.safeSize = { width: 1920, height: 1080 }; });
+    await page.click('#btn-safe-refresh');
+    await page.waitForFunction(() => /horizontal/.test(document.getElementById('safe-note').textContent),
+                               null, { timeout: 5000 });
+    check('safe zones: a horizontal sequence is called out', true);
+    await page.click('#safe-src-preview');
+    check('safe zones: back to the layout preview hides the Premiere controls', !(await page.isVisible('#btn-safe-refresh')));
 
     await page.selectOption('#layout', 'overlay');
     await page.click('#tab-webcam');
